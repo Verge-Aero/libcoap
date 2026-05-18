@@ -748,11 +748,13 @@ coap_op_obs_cnt_track_observe(coap_context_t *context,
     resource_key.s = (uint8_t *)buf;
     resource_key.length = strlen(buf);
     if (!coap_binary_equal(resource_name, &resource_key)) {
-      if (fprintf(fp_new, "%s %u\n", resource_key.s, observe_num) < 0)
+      if (fprintf(fp_new, "%s %lu\n", resource_key.s,
+                  (unsigned long)observe_num) < 0)
         goto fail;
     }
   }
-  if (fprintf(fp_new, "%s %u\n", resource_name->s, n_observe_num) < 0)
+  if (fprintf(fp_new, "%s %lu\n", resource_name->s,
+              (unsigned long)n_observe_num) < 0)
     goto fail;
   if (fflush(fp_new) == EOF)
     goto fail;
@@ -814,7 +816,8 @@ coap_op_obs_cnt_deleted(coap_context_t *context,
     resource_key.s = (uint8_t *)buf;
     resource_key.length = strlen(buf);
     if (!coap_binary_equal(resource_name, &resource_key)) {
-      if (fprintf(fp_new, "%s %u\n", resource_key.s, observe_num) < 0)
+      if (fprintf(fp_new, "%s %lu\n", resource_key.s,
+                  (unsigned long)observe_num) < 0)
         goto fail;
     }
   }

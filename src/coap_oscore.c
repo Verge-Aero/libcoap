@@ -218,7 +218,7 @@ coap_rebuild_pdu_for_proxy(coap_pdu_t *pdu) {
                            coap_opt_length(option),
                            &uri) < 0 || uri.scheme >= COAP_URI_SCHEME_LAST) {
     coap_log_warn("Proxy URI '%.*s' not decodable\n",
-                  coap_opt_length(option),
+                  (int)coap_opt_length(option),
                   (const char *)coap_opt_value(option));
     goto error;
   }
