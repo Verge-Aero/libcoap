@@ -999,6 +999,59 @@ coap_socket_send(coap_socket_t *sock, coap_session_t *session,
 
   return bytes_written;
 }
+
+/*
+ * QoS marking (Verge/Nixie addition, not upstream): set the IPv6 Traffic Class (DSCP+ECN) — or
+ * the IPv4 TOS for an AF_INET socket — that the kernel writes into the header of every datagram
+ * the socket subsequently sends. The kernel routes on it (DSCP -> fwmark -> policy table -> band).
+ * `tclass` is the full 8-bit field (DSCP = tclass >> 2). Applies socket-wide; for per-PDU class on
+ * a shared socket, call again before each send (the caller is single-threaded). Returns 1 on
+ * success. Defined only on the POSIX socket path; embedded stacks get the no-op below.
+ */
+int
+coap_socket_set_tclass(coap_socket_t *sock, int family, uint8_t tclass) {
+  int tc = tclass;
+  if (!sock)
+    return 0;
+#if defined(IPV6_TCLASS)
+  if (family == AF_INET6) {
+    if (setsockopt(sock->fd, IPPROTO_IPV6, IPV6_TCLASS, OPTVAL_T(&tc), sizeof(tc)) ==
+        COAP_SOCKET_ERROR) {
+      coap_log_warn("coap_socket_set_tclass: setsockopt IPV6_TCLASS: %s\n",
+                    coap_socket_strerror());
+      return 0;
+    }
+    return 1;
+  }
+#endif /* IPV6_TCLASS */
+#if defined(IP_TOS)
+  if (family == AF_INET) {
+    if (setsockopt(sock->fd, IPPROTO_IP, IP_TOS, OPTVAL_T(&tc), sizeof(tc)) ==
+        COAP_SOCKET_ERROR) {
+      coap_log_warn("coap_socket_set_tclass: setsockopt IP_TOS: %s\n",
+                    coap_socket_strerror());
+      return 0;
+    }
+    return 1;
+  }
+#endif /* IP_TOS */
+  (void)tc;
+  return 0;
+}
+
+void
+coap_session_set_tclass(coap_session_t *session, uint8_t tclass) {
+  if (session)
+    coap_socket_set_tclass(&session->sock, session->addr_info.remote.addr.sa.sa_family, tclass);
+}
+
+void
+coap_endpoint_set_tclass(coap_endpoint_t *endpoint, uint8_t tclass) {
+  /* A UDP server session shares the endpoint socket, so this also sets the class for every
+   * response/notification the node sends from it. */
+  if (endpoint)
+    coap_socket_set_tclass(&endpoint->sock, endpoint->bind_addr.addr.sa.sa_family, tclass);
+}
 #endif /* ! RIOT_VERSION && ! WITH_LWIP && ! WITH_CONTIKI */
 
 #define SIN6(A) ((struct sockaddr_in6 *)(A))

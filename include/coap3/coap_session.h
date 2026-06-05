@@ -146,6 +146,17 @@ const coap_address_t *coap_session_get_addr_local(
     const coap_session_t *session);
 
 /**
+ * Set the IPv6 Traffic Class / IPv4 TOS (DSCP + ECN) the kernel stamps on every datagram this
+ * session sends from now on. QoS marking — a Verge/Nixie addition (not upstream): the kernel
+ * routes on it. @p tclass is the full 8-bit field (DSCP = tclass >> 2). For a UDP server session,
+ * the socket is the endpoint's, so this affects the node's responses/notifications too.
+ *
+ * @param session The CoAP session.
+ * @param tclass  Traffic Class byte to apply.
+ */
+void coap_session_set_tclass(coap_session_t *session, uint8_t tclass);
+
+/**
  * Get the session protocol type
  *
  * @param session The CoAP session.
@@ -415,6 +426,16 @@ COAP_API coap_endpoint_t *coap_new_endpoint(coap_context_t *context,
  * @param mtu maximum message size
  */
 void coap_endpoint_set_default_mtu(coap_endpoint_t *endpoint, unsigned mtu);
+
+/**
+ * Set the IPv6 Traffic Class / IPv4 TOS (DSCP + ECN) stamped on every datagram sent from this
+ * endpoint's socket — i.e. the node's server responses and observe notifications. QoS marking, a
+ * Verge/Nixie addition (not upstream). @p tclass is the full 8-bit field (DSCP = tclass >> 2).
+ *
+ * @param endpoint The CoAP endpoint.
+ * @param tclass   Traffic Class byte to apply.
+ */
+void coap_endpoint_set_tclass(coap_endpoint_t *endpoint, uint8_t tclass);
 
 /**
  * Release an endpoint and all the structures associated with it.

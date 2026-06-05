@@ -204,6 +204,13 @@ ssize_t coap_socket_send(coap_socket_t *sock, coap_session_t *session,
  */
 ssize_t coap_socket_recv(coap_socket_t *sock, coap_packet_t *packet);
 
+/**
+ * Set the IPv6 Traffic Class (or IPv4 TOS) for all subsequent sends on @p sock.
+ * QoS marking — a Verge/Nixie addition (not upstream). @p family selects the option
+ * (AF_INET6 -> IPV6_TCLASS, AF_INET -> IP_TOS). Returns 1 on success, 0 otherwise.
+ */
+int coap_socket_set_tclass(coap_socket_t *sock, int family, uint8_t tclass);
+
 #ifndef coap_mcast_interface
 # define coap_mcast_interface(Local) 0
 #endif
