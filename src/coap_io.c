@@ -276,6 +276,15 @@ coap_socket_connect_udp(coap_socket_t *sock,
                    sizeof(off)) == COAP_SOCKET_ERROR)
       coap_log_warn("coap_socket_connect_udp: setsockopt IPV6_V6ONLY: %s\n",
                     coap_socket_strerror());
+    /* QoS receive visibility (Verge): deliver the received Traffic Class + Flow Label as
+     * ancillary data so coap_socket_recv() surfaces them on this connected client socket too
+     * (the server endpoint enables the same at bind). Best-effort — ignore errors. */
+#if defined(IPV6_RECVTCLASS)
+    setsockopt(sock->fd, IPPROTO_IPV6, IPV6_RECVTCLASS, OPTVAL_T(&on), sizeof(on));
+#endif
+#if defined(IPV6_FLOWINFO)
+    setsockopt(sock->fd, IPPROTO_IPV6, IPV6_FLOWINFO, OPTVAL_T(&on), sizeof(on));
+#endif
 #endif /* COAP_IPV6_SUPPORT */
     break;
 #if COAP_AF_UNIX_SUPPORT
@@ -1141,7 +1150,23 @@ coap_socket_recv(coap_socket_t *sock, coap_packet_t *packet) {
   }
 
   if (sock->flags & COAP_SOCKET_CONNECTED) {
-#ifdef _WIN32
+#if !defined(_WIN32) && defined(HAVE_STRUCT_CMSGHDR)
+    /* recvmsg (not recv) so the QoS ancillary data (Traffic Class + Flow Label) is harvested on a
+     * connected client socket too — IPV6_RECVTCLASS / IPV6_FLOWINFO are enabled at connect. No
+     * msg_name needed (the socket is connected); only the QoS cmsgs are of interest here. */
+    char ccbuf[CMSG_SPACE(sizeof(int)) + CMSG_SPACE(sizeof(int))];
+    struct cmsghdr *ccmsg;
+    struct iovec ciov;
+    struct msghdr cmhdr;
+    ciov.iov_base = packet->payload;
+    ciov.iov_len = (iov_len_t)COAP_RXBUFFER_SIZE;
+    memset(&cmhdr, 0, sizeof(cmhdr));
+    cmhdr.msg_iov = &ciov;
+    cmhdr.msg_iovlen = 1;
+    cmhdr.msg_control = ccbuf;
+    cmhdr.msg_controllen = sizeof(ccbuf);
+    len = recvmsg(sock->fd, &cmhdr, 0);
+#elif defined(_WIN32)
     len = recv(sock->fd, (char *)packet->payload, COAP_RXBUFFER_SIZE, 0);
 #else
     len = recv(sock->fd, packet->payload, COAP_RXBUFFER_SIZE, 0);
@@ -1167,6 +1192,20 @@ coap_socket_recv(coap_socket_t *sock, coap_packet_t *packet) {
       goto error;
     } else if (len > 0) {
       packet->length = (size_t)len;
+#if !defined(_WIN32) && defined(HAVE_STRUCT_CMSGHDR)
+      for (ccmsg = CMSG_FIRSTHDR(&cmhdr); ccmsg; ccmsg = CMSG_NXTHDR(&cmhdr, ccmsg)) {
+        if (ccmsg->cmsg_level == IPPROTO_IPV6 && ccmsg->cmsg_type == IPV6_TCLASS) {
+          int v = 0; memcpy(&v, CMSG_DATA(ccmsg), sizeof(v));
+          packet->recv_tclass = v & 0xFF;
+        }
+#if defined(IPV6_FLOWINFO)
+        else if (ccmsg->cmsg_level == IPPROTO_IPV6 && ccmsg->cmsg_type == IPV6_FLOWINFO) {
+          uint32_t v = 0; memcpy(&v, CMSG_DATA(ccmsg), sizeof(v));
+          packet->recv_flowlabel = (int)(ntohl(v) & 0x000FFFFFu);
+        }
+#endif
+      }
+#endif /* !_WIN32 && HAVE_STRUCT_CMSGHDR */
     }
   } else {
 #if defined(_WIN32)
