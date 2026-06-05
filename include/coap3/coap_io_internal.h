@@ -232,6 +232,8 @@ void coap_io_lwip_cleanup(void);
 struct coap_packet_t {
   coap_addr_tuple_t addr_info; /**< local and remote addresses */
   int ifindex;                /**< the interface index */
+  int recv_tclass;            /**< received IPv6 Traffic Class, or -1 if absent (Verge QoS) */
+  int recv_flowlabel;         /**< received 20-bit IPv6 Flow Label, or -1 if absent (Verge QoS) */
   size_t length;             /**< length of payload */
   unsigned char *payload;    /**< payload */
 };

@@ -78,6 +78,8 @@ struct coap_session_t {
   UT_hash_handle hh;
   coap_addr_tuple_t addr_info;      /**< remote/local address info */
   int ifindex;                      /**< interface index */
+  int recv_tclass;                  /**< last received IPv6 Traffic Class, or -1 (Verge QoS) */
+  int recv_flowlabel;               /**< last received 20-bit Flow Label, or -1 (Verge QoS) */
   coap_socket_t sock;               /**< socket object for the session, if
                                          any */
 #if COAP_SERVER_SUPPORT

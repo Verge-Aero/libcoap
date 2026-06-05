@@ -80,6 +80,11 @@
 #if defined(__linux__) && !defined(IPV6_FLOWINFO_SEND)
 #  define IPV6_FLOWINFO_SEND 33
 #endif
+/* Receive-side QoS visibility: ask the OS to deliver the flow label as ancillary data on recv
+ * (the traffic class uses the standard IPV6_RECVTCLASS). Linux UAPI value when libc omits it. */
+#if defined(__linux__) && !defined(IPV6_FLOWINFO)
+#  define IPV6_FLOWINFO 11
+#endif
 #endif /* ! WITH_CONTIKI && ! RIOT_VERSION && ! WITH_LWIP */
 
 #if COAP_SERVER_SUPPORT
@@ -154,6 +159,14 @@ coap_socket_bind_udp(coap_socket_t *sock,
                    sizeof(on)) == COAP_SOCKET_ERROR)
       coap_log_alert("coap_socket_bind_udp: setsockopt IPV6_PKTINFO: %s\n",
                      coap_socket_strerror());
+    /* QoS receive visibility (Verge): deliver the received Traffic Class + Flow Label as
+     * ancillary data so coap_socket_recv() can surface them. Best-effort — ignore errors. */
+#if defined(IPV6_RECVTCLASS)
+    setsockopt(sock->fd, IPPROTO_IPV6, IPV6_RECVTCLASS, OPTVAL_T(&on), sizeof(on));
+#endif
+#if defined(IPV6_FLOWINFO)
+    setsockopt(sock->fd, IPPROTO_IPV6, IPV6_FLOWINFO, OPTVAL_T(&on), sizeof(on));
+#endif
 #endif /* !defined(ESPIDF_VERSION) */
 #endif /* COAP_IPV6_SUPPORT */
     setsockopt(sock->fd, IPPROTO_IP, GEN_IP_PKTINFO, OPTVAL_T(&on), sizeof(on));
@@ -1117,6 +1130,9 @@ coap_socket_recv(coap_socket_t *sock, coap_packet_t *packet) {
   assert(sock);
   assert(packet);
 
+  packet->recv_tclass = -1;     /* QoS (Verge): set from ancillary data on the recvmsg path below */
+  packet->recv_flowlabel = -1;
+
   if ((sock->flags & COAP_SOCKET_CAN_READ) == 0) {
     return -1;
   } else {
@@ -1158,8 +1174,11 @@ coap_socket_recv(coap_socket_t *sock, coap_packet_t *packet) {
     int r;
 #endif /* _WIN32 */
 #ifdef HAVE_STRUCT_CMSGHDR
-    /* a buffer large enough to hold all packet info types, ipv6 is the largest */
-    char buf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+    /* a buffer large enough to hold all packet info types (ipv6 pktinfo is the largest) plus the
+     * QoS ancillary records harvested below (Traffic Class + Flow Label, an int each); otherwise
+     * the kernel truncates the later cmsgs and the flow label is lost (Verge QoS). */
+    char buf[CMSG_SPACE(sizeof(struct in6_pktinfo)) + CMSG_SPACE(sizeof(int)) +
+             CMSG_SPACE(sizeof(int))];
     struct cmsghdr *cmsg;
     struct msghdr mhdr;
     struct iovec iov[1];
@@ -1253,8 +1272,21 @@ coap_socket_recv(coap_socket_t *sock, coap_packet_t *packet) {
           memcpy(&packet->addr_info.local.addr.sin6.sin6_addr,
                  &u.p->ipi6_addr, sizeof(struct in6_addr));
           dst_found = 1;
-          break;
+          continue;   /* keep walking: the QoS ancillary records may follow this one */
         }
+        /* QoS receive visibility (Verge): harvest the IPv6 Traffic Class + Flow Label. */
+        if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_TCLASS) {
+          int v = 0; memcpy(&v, CMSG_DATA(cmsg), sizeof(v));
+          packet->recv_tclass = v & 0xFF;
+          continue;
+        }
+#if defined(IPV6_FLOWINFO)
+        if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_FLOWINFO) {
+          uint32_t v = 0; memcpy(&v, CMSG_DATA(cmsg), sizeof(v));
+          packet->recv_flowlabel = (int)(ntohl(v) & 0x000FFFFFu);
+          continue;
+        }
+#endif /* IPV6_FLOWINFO */
 #endif /* COAP_IPV6_SUPPORT */
 
 #if COAP_IPV4_SUPPORT
@@ -1281,7 +1313,7 @@ coap_socket_recv(coap_socket_t *sock, coap_packet_t *packet) {
                    &u.p->ipi_addr, sizeof(struct in_addr));
           }
           dst_found = 1;
-          break;
+          continue;
         }
 #endif /* IP_PKTINFO */
 #if defined(IP_RECVDSTADDR)
@@ -1290,7 +1322,7 @@ coap_socket_recv(coap_socket_t *sock, coap_packet_t *packet) {
           memcpy(&packet->addr_info.local.addr.sin.sin_addr,
                  CMSG_DATA(cmsg), sizeof(struct in_addr));
           dst_found = 1;
-          break;
+          continue;
         }
 #endif /* IP_RECVDSTADDR */
 #endif /* COAP_IPV4_SUPPORT */

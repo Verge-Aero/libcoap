@@ -84,6 +84,8 @@ coap_netif_dgrm_read(coap_session_t *session, coap_packet_t *packet) {
     coap_ticks(&session->last_rx_tx);
     memcpy(&session->addr_info, &packet->addr_info,
            sizeof(session->addr_info));
+    session->recv_tclass = packet->recv_tclass;       /* QoS receive visibility (Verge) */
+    session->recv_flowlabel = packet->recv_flowlabel;
     coap_log_debug("*  %s: netif: recv %4zd bytes\n",
                    coap_session_str(session), bytes_read);
   }

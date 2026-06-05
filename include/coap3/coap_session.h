@@ -168,6 +168,26 @@ void coap_session_set_tclass(coap_session_t *session, uint8_t tclass);
 void coap_session_set_flowlabel(coap_session_t *session, uint32_t label);
 
 /**
+ * Get the IPv6 Traffic Class (DSCP+ECN) of the last datagram received on this session, or -1 if
+ * none has been seen / the platform didn't supply it. QoS receive visibility — a Verge/Nixie
+ * addition (not upstream). Surfaced on the server/unconnected receive path (a connected client
+ * socket reads via recv() without ancillary data). DSCP = value >> 2.
+ *
+ * @param session The CoAP session.
+ * @return        Traffic Class byte (0..255), or -1 if unavailable.
+ */
+int coap_session_get_recv_tclass(const coap_session_t *session);
+
+/**
+ * Get the 20-bit IPv6 Flow Label of the last datagram received on this session, or -1 if none has
+ * been seen / the platform didn't supply it. QoS receive visibility (Verge/Nixie, not upstream).
+ *
+ * @param session The CoAP session.
+ * @return        Flow label (0..0xFFFFF), or -1 if unavailable.
+ */
+int coap_session_get_recv_flowlabel(const coap_session_t *session);
+
+/**
  * Get the session protocol type
  *
  * @param session The CoAP session.

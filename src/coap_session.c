@@ -436,6 +436,8 @@ coap_make_session(coap_proto_t proto, coap_session_type_t type,
   else
     coap_address_init(&session->addr_info.remote);
   session->ifindex = ifindex;
+  session->recv_tclass = -1;      /* QoS (Verge): -1 until a datagram with the ancillary data arrives */
+  session->recv_flowlabel = -1;
   session->context = context;
 #if COAP_SERVER_SUPPORT
   session->endpoint = endpoint;
@@ -1994,6 +1996,16 @@ coap_session_get_ifindex(const coap_session_t *session) {
   if (session)
     return session->ifindex;
   return -1;
+}
+
+int
+coap_session_get_recv_tclass(const coap_session_t *session) {
+  return session ? session->recv_tclass : -1;
+}
+
+int
+coap_session_get_recv_flowlabel(const coap_session_t *session) {
+  return session ? session->recv_flowlabel : -1;
 }
 
 void *
