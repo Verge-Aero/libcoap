@@ -1069,10 +1069,23 @@ coap_socket_set_tclass(coap_socket_t *sock, int family, uint8_t tclass) {
   return 0;
 }
 
+/* The socket a session actually sends from. A UDP *server* session has an empty own-socket and
+ * sends over the shared endpoint socket (mirrors coap_netif_dgrm_write) — so QoS sockopts must be
+ * applied there, or marking a per-peer response would hit an invalid fd and silently no-op. */
+static coap_socket_t *
+qos_session_sock(coap_session_t *session) {
+#if COAP_SERVER_SUPPORT
+  if (session->sock.flags == COAP_SOCKET_EMPTY && session->endpoint)
+    return &session->endpoint->sock;
+#endif /* COAP_SERVER_SUPPORT */
+  return &session->sock;
+}
+
 void
 coap_session_set_tclass(coap_session_t *session, uint8_t tclass) {
   if (session)
-    coap_socket_set_tclass(&session->sock, session->addr_info.remote.addr.sa.sa_family, tclass);
+    coap_socket_set_tclass(qos_session_sock(session),
+                           session->addr_info.remote.addr.sa.sa_family, tclass);
 }
 
 void
@@ -1096,21 +1109,23 @@ coap_session_set_flowlabel(coap_session_t *session, uint32_t label) {
   if (!session || session->addr_info.remote.addr.sa.sa_family != AF_INET6)
     return;   /* IPv4 has no flow label */
 #if defined(IPV6_FLOWINFO_SEND)
+  coap_socket_t *sk = qos_session_sock(session);   /* endpoint socket for a server session */
   int on = 1;
-  if (setsockopt(session->sock.fd, IPPROTO_IPV6, IPV6_FLOWINFO_SEND, OPTVAL_T(&on), sizeof(on)) ==
+  if (setsockopt(sk->fd, IPPROTO_IPV6, IPV6_FLOWINFO_SEND, OPTVAL_T(&on), sizeof(on)) ==
       COAP_SOCKET_ERROR) {
     coap_log_warn("coap_session_set_flowlabel: setsockopt IPV6_FLOWINFO_SEND: %s\n",
                   coap_socket_strerror());
     return;
   }
+  /* The flow label rides in the destination sockaddr the send uses (msg_name on the unconnected /
+   * server path = this session's remote; the connected path needs a re-connect). */
   session->addr_info.remote.addr.sin6.sin6_flowinfo = htonl(label & 0x000FFFFFu);
-  if (session->sock.flags & COAP_SOCKET_MULTICAST)
+  if (sk->flags & COAP_SOCKET_MULTICAST)
     /* coap_send() re-copies sock->mcast_addr into addr_info.remote for a multicast session on every
      * send, so the flow label must live there too or it is wiped before the socket sees it. */
-    session->sock.mcast_addr.addr.sin6.sin6_flowinfo = htonl(label & 0x000FFFFFu);
-  if (session->sock.flags & COAP_SOCKET_CONNECTED)
-    (void)connect(session->sock.fd, &session->addr_info.remote.addr.sa,
-                  session->addr_info.remote.size);
+    sk->mcast_addr.addr.sin6.sin6_flowinfo = htonl(label & 0x000FFFFFu);
+  if (sk->flags & COAP_SOCKET_CONNECTED)
+    (void)connect(sk->fd, &session->addr_info.remote.addr.sa, session->addr_info.remote.size);
 #else
   (void)label;   /* platform lacks IPV6_FLOWINFO_SEND */
 #endif
