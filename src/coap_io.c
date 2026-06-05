@@ -72,6 +72,14 @@
 #else
 #  error "Need IPV6_PKTINFO or IPV6_RECVPKTINFO to request ancillary data from OS."
 #endif /* IPV6_RECVPKTINFO */
+
+/* QoS flow-label send (Verge/Nixie). IPV6_FLOWINFO_SEND lets the kernel stamp the IPv6 Flow Label
+ * from the destination sockaddr's sin6_flowinfo. Some libc headers don't export the constant even
+ * though the kernel supports it; supply the stable Linux UAPI value. Left undefined elsewhere, so
+ * the flow-label setter no-ops on platforms without it (e.g. NuttX, until its QoS push lands). */
+#if defined(__linux__) && !defined(IPV6_FLOWINFO_SEND)
+#  define IPV6_FLOWINFO_SEND 33
+#endif
 #endif /* ! WITH_CONTIKI && ! RIOT_VERSION && ! WITH_LWIP */
 
 #if COAP_SERVER_SUPPORT
@@ -1051,6 +1059,39 @@ coap_endpoint_set_tclass(coap_endpoint_t *endpoint, uint8_t tclass) {
    * response/notification the node sends from it. */
   if (endpoint)
     coap_socket_set_tclass(&endpoint->sock, endpoint->bind_addr.addr.sa.sa_family, tclass);
+}
+
+/*
+ * QoS flow-label marking (Verge/Nixie addition, not upstream): set the 20-bit IPv6 Flow Label the
+ * kernel writes on this session's subsequent sends — the fine-grained "value" (e.g. -> a TSCH
+ * track), as opposed to the coarse class set by coap_session_set_tclass. IPv6 only. The TC bits of
+ * the flowinfo are left 0 so the IPV6_TCLASS setting still governs the class; the kernel composes
+ * the two. A connected socket sends via send() with no msg_name, so the new flowinfo is re-applied
+ * with connect() to the same peer (flowinfo is not part of session identity, so this is benign).
+ */
+void
+coap_session_set_flowlabel(coap_session_t *session, uint32_t label) {
+  if (!session || session->addr_info.remote.addr.sa.sa_family != AF_INET6)
+    return;   /* IPv4 has no flow label */
+#if defined(IPV6_FLOWINFO_SEND)
+  int on = 1;
+  if (setsockopt(session->sock.fd, IPPROTO_IPV6, IPV6_FLOWINFO_SEND, OPTVAL_T(&on), sizeof(on)) ==
+      COAP_SOCKET_ERROR) {
+    coap_log_warn("coap_session_set_flowlabel: setsockopt IPV6_FLOWINFO_SEND: %s\n",
+                  coap_socket_strerror());
+    return;
+  }
+  session->addr_info.remote.addr.sin6.sin6_flowinfo = htonl(label & 0x000FFFFFu);
+  if (session->sock.flags & COAP_SOCKET_MULTICAST)
+    /* coap_send() re-copies sock->mcast_addr into addr_info.remote for a multicast session on every
+     * send, so the flow label must live there too or it is wiped before the socket sees it. */
+    session->sock.mcast_addr.addr.sin6.sin6_flowinfo = htonl(label & 0x000FFFFFu);
+  if (session->sock.flags & COAP_SOCKET_CONNECTED)
+    (void)connect(session->sock.fd, &session->addr_info.remote.addr.sa,
+                  session->addr_info.remote.size);
+#else
+  (void)label;   /* platform lacks IPV6_FLOWINFO_SEND */
+#endif
 }
 #endif /* ! RIOT_VERSION && ! WITH_LWIP && ! WITH_CONTIKI */
 

@@ -157,6 +157,17 @@ const coap_address_t *coap_session_get_addr_local(
 void coap_session_set_tclass(coap_session_t *session, uint8_t tclass);
 
 /**
+ * Set the 20-bit IPv6 Flow Label the kernel stamps on every datagram this session sends from now
+ * on. QoS marking — a Verge/Nixie addition (not upstream): the fine-grained "value" (vs. the
+ * coarse class of coap_session_set_tclass), e.g. selecting a TSCH track. IPv6 only; no-op on IPv4
+ * and on platforms without IPV6_FLOWINFO_SEND. Composes with the traffic class.
+ *
+ * @param session The CoAP session.
+ * @param label   Flow label (low 20 bits used).
+ */
+void coap_session_set_flowlabel(coap_session_t *session, uint32_t label);
+
+/**
  * Get the session protocol type
  *
  * @param session The CoAP session.

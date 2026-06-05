@@ -815,6 +815,7 @@ coap_address_copy(coap_address_t *dst, const coap_address_t *src) {
     dst->addr.sin6.sin6_addr = src->addr.sin6.sin6_addr;
     dst->addr.sin6.sin6_port = src->addr.sin6.sin6_port;
     dst->addr.sin6.sin6_scope_id = src->addr.sin6.sin6_scope_id;
+    dst->addr.sin6.sin6_flowinfo = src->addr.sin6.sin6_flowinfo;  /* preserve QoS flow label (Verge) */
   }
 #endif /* COAP_IPV6_SUPPORT */
 #if COAP_IPV4_SUPPORT && COAP_IPV6_SUPPORT
