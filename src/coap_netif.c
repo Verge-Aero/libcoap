@@ -137,6 +137,20 @@ coap_netif_dgrm_write(coap_session_t *session, const uint8_t *data,
   }
 #endif /* COAP_SERVER_SUPPORT */
 
+  /* Test-only packet-loss injection: NX_TEST_DROP=<pct> drops ~pct% of outbound datagrams
+   * (deterministic counter hash, so runs reproduce) to exercise transfer recovery over the loopback
+   * test transport. Gated entirely by the env var — absent (the normal case) it's a single getenv and
+   * nothing drops; the name is deliberately test-only. */
+  {
+    const char *nx_e = getenv("NX_TEST_DROP");   /* re-read each send so tests can toggle it */
+    int nx_drop_pct = nx_e ? atoi(nx_e) : 0;
+    if (nx_drop_pct > 0) {
+      static unsigned long nx_drop_ctr = 0;
+      if ((((++nx_drop_ctr) * 2654435761UL) % 100UL) < (unsigned long)nx_drop_pct)
+        return (ssize_t)datalen;   /* pretend the datagram was sent; the peer never sees it */
+    }
+  }
+
   bytes_written = coap_socket_send(sock, session, data, datalen);
   keep_errno = errno;
   if (bytes_written <= 0) {
