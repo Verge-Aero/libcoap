@@ -219,6 +219,10 @@ struct coap_lg_srcv_t {
   uint8_t szx;           /**< size of individual blocks */
   size_t total_len;      /**< Length as indicated by SIZE1 option */
   coap_binary_t *body_data; /**< Used for re-assembling entire body */
+  coap_block_body_write_t stream_write; /**< If set (COAP_BLOCK_STREAM_BODY), each received
+                                             block is written here as it arrives instead of
+                                             being accumulated into body_data */
+  void *stream_app_ptr;  /**< app pointer for stream_write, from coap_block_body_open_t */
   coap_resource_t *resource; /**< associated resource */
   coap_str_const_t *uri_path; /** set to uri_path if unknown resource */
   coap_rblock_t rec_blocks; /** < list of received blocks */

@@ -171,6 +171,9 @@ struct coap_pdu_t {
   size_t body_length;       /**< Holds body data length */
   size_t body_offset;       /**< Holds body data offset */
   size_t body_total;        /**< Holds body data total size */
+  uint8_t body_complete;    /**< Set on the completion handler call of a streamed
+                                 large body (COAP_BLOCK_STREAM_BODY); see
+                                 coap_get_block_body_complete() */
   coap_lg_xmit_t *lg_xmit;  /**< Holds ptr to lg_xmit if sending a set of
                                  blocks */
   coap_session_t *session;  /**< Session responsible for PDU or NULL */

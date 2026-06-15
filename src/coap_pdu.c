@@ -909,6 +909,12 @@ coap_get_data_large(const coap_pdu_t *pdu, size_t *len, const uint8_t **data,
   return 1;
 }
 
+int
+coap_get_block_body_complete(const coap_pdu_t *pdu) {
+  assert(pdu);
+  return pdu->body_complete != 0;
+}
+
 #ifndef SHORT_ERROR_RESPONSE
 typedef struct {
   unsigned char code;

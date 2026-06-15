@@ -67,6 +67,13 @@ typedef struct {
 #define COAP_BLOCK_STLESS_BLOCK2 0x40 /* (svr)Server is stateless for handling Block2 */
 #define COAP_BLOCK_NOT_RANDOM_BLOCK1 0x80 /* (svr)Disable server handling random order
                                              block1 */
+#define COAP_BLOCK_STREAM_BODY  0x100 /* (svr)Stream each received block to the app as it
+                                         arrives (out of order possible) rather than buffering
+                                         the whole body. The app must supply a seekable,
+                                         random-offset sink and use
+                                         coap_get_block_body_complete() to detect when the full
+                                         body has arrived. Bounds receive RAM to one block plus
+                                         the missing-block bitmap. */
 /* WARNING: Added defined values must not encroach into 0xff000000 which are defined elsewhere */
 
 /**
@@ -286,6 +293,74 @@ void coap_add_data_blocked_response(const coap_pdu_t *request,
  */
 typedef void (*coap_release_large_data_t)(coap_session_t *session,
                                           void *app_ptr);
+
+/**
+ * Callback to write one received block of a large request body straight to the
+ * application's sink, used with COAP_BLOCK_STREAM_BODY / coap_resource_set_block_stream().
+ *
+ * Blocks may arrive out of order, so the sink must be random-offset addressable.
+ * No response is generated per block (Q-Block bursts are unacknowledged); the
+ * library's missing-block recovery is unaffected. The resource's normal request
+ * handler is still invoked once, after the whole body has arrived, with a NULL
+ * body and coap_get_block_body_complete() == 1, so the application can emit its
+ * response and release the sink.
+ *
+ * @param session  The session the body is arriving on.
+ * @param app_ptr  The pointer returned by the coap_block_body_open_t callback.
+ * @param offset   Byte offset of this block within the full body.
+ * @param data     This block's bytes.
+ * @param length   This block's length.
+ */
+typedef void (*coap_block_body_write_t)(coap_session_t *session, void *app_ptr,
+                                        size_t offset, const uint8_t *data,
+                                        size_t length);
+
+/**
+ * Callback invoked once, when the first block of a large request body arrives on
+ * a resource that has opted into streaming receive via coap_resource_set_block_stream().
+ *
+ * The application opens a sink for the body and returns an opaque pointer for it,
+ * setting @p out_write_fn to the per-block writer. Returning NULL declines streaming
+ * for this body and falls back to whole-body buffering.
+ *
+ * @param session       The session the body is arriving on.
+ * @param resource      The resource receiving the body.
+ * @param request       The first request PDU (for inspecting Uri-Path / Uri-Query etc).
+ * @param total_length  Full body size from the Size1 option, or 0 if not provided.
+ * @param out_write_fn  Set to the per-block write callback.
+ *
+ * @return Opaque application pointer passed to the write callback, or NULL to decline.
+ */
+typedef void *(*coap_block_body_open_t)(coap_session_t *session,
+                                        coap_resource_t *resource,
+                                        const coap_pdu_t *request,
+                                        size_t total_length,
+                                        coap_block_body_write_t *out_write_fn);
+
+/**
+ * Opt @p resource into streaming receive of large request bodies. When set (and the
+ * session block_mode does not force a single body), each received block is written
+ * to the application's sink as it arrives instead of the whole body being buffered,
+ * bounding receive memory to one block plus the missing-block bitmap. Pass NULL to
+ * disable.
+ *
+ * @param resource The resource.
+ * @param open_fn  The body-open callback, or NULL to disable streaming receive.
+ */
+void coap_resource_set_block_stream(coap_resource_t *resource,
+                                    coap_block_body_open_t open_fn);
+
+/**
+ * Query whether this delivery of a (streamed) large body is the completion call —
+ * i.e. the full body has now arrived. Valid inside a resource request handler when
+ * the resource uses coap_resource_set_block_stream(). On the completion call the PDU
+ * carries a NULL body (all blocks were already streamed to the sink).
+ *
+ * @param pdu The request PDU passed to the handler.
+ *
+ * @return 1 if the full body has arrived (completion call), else 0.
+ */
+int coap_get_block_body_complete(const coap_pdu_t *pdu);
 
 /**
  * Associates given data with the @p pdu that is passed as second parameter.

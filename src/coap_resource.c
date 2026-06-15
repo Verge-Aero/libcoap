@@ -1385,6 +1385,12 @@ coap_resource_set_mode(coap_resource_t *resource, int mode) {
 }
 
 void
+coap_resource_set_block_stream(coap_resource_t *resource,
+                               coap_block_body_open_t open_fn) {
+  resource->block_stream_open = open_fn;
+}
+
+void
 coap_resource_set_userdata(coap_resource_t *resource, void *data) {
   resource->user_data = data;
 }

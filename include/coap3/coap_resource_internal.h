@@ -68,6 +68,12 @@ struct coap_resource_t {
    */
   coap_method_handler_t handler[7];
 
+  /**
+   * If set (via coap_resource_set_block_stream()), large request bodies are streamed
+   * block-by-block to the application's sink as they arrive rather than buffered whole.
+   */
+  coap_block_body_open_t block_stream_open;
+
   UT_hash_handle hh;
 
   coap_attr_t *link_attr; /**< attributes to be included with the link format */

@@ -2973,6 +2973,17 @@ coap_handle_request_put_block(coap_context_t *context,
       lg_srcv->rtag_set = 1;
     }
     lg_srcv->body_data = NULL;
+    if (resource && resource->block_stream_open) {
+      /* App opted into streaming receive: obtain a per-block sink for this body.
+         Each block is written to it as it arrives (below) instead of being buffered. */
+      coap_block_body_write_t write_fn = NULL;
+      void *app_ptr = resource->block_stream_open(session, resource, pdu,
+                                                  lg_srcv->total_len, &write_fn);
+      if (app_ptr && write_fn) {
+        lg_srcv->stream_write = write_fn;
+        lg_srcv->stream_app_ptr = app_ptr;
+      }
+    }
     LL_PREPEND(session->lg_srcv, lg_srcv);
   }
   coap_ticks(&lg_srcv->last_used);
@@ -3040,13 +3051,20 @@ coap_handle_request_put_block(coap_context_t *context,
     if (lg_srcv->total_len < saved_offset + length) {
       lg_srcv->total_len = saved_offset + length;
     }
-    lg_srcv->body_data = coap_block_build_body_lkd(lg_srcv->body_data, length, data,
-                                                   saved_offset, lg_srcv->total_len);
-    if (!lg_srcv->body_data) {
-      coap_add_data(response, sizeof("Memory issue")-1,
-                    (const uint8_t *)"Memory issue");
-      response->code = COAP_RESPONSE_CODE(500);
-      goto skip_app_handler;
+    if (lg_srcv->stream_write) {
+      /* Streaming: hand this block straight to the app sink (blocks may arrive out of
+         order). The body is never buffered; recovery still rides on rec_blocks. */
+      if (length)
+        lg_srcv->stream_write(session, lg_srcv->stream_app_ptr, saved_offset, data, length);
+    } else {
+      lg_srcv->body_data = coap_block_build_body_lkd(lg_srcv->body_data, length, data,
+                                                     saved_offset, lg_srcv->total_len);
+      if (!lg_srcv->body_data) {
+        coap_add_data(response, sizeof("Memory issue")-1,
+                      (const uint8_t *)"Memory issue");
+        response->code = COAP_RESPONSE_CODE(500);
+        goto skip_app_handler;
+      }
     }
   }
 
@@ -3160,7 +3178,13 @@ give_app_data:
                        lg_srcv->observe_length, lg_srcv->observe);
   }
   coap_remove_option(pdu, block_option);
-  if (lg_srcv->body_data) {
+  if (lg_srcv->stream_write) {
+    /* Streamed: every block was already written to the sink. Deliver a NULL body with the
+       completion flag so the resource handler can finish the sink and emit its response. */
+    pdu->body_data = NULL;
+    pdu->body_length = 0;
+    pdu->body_complete = 1;
+  } else if (lg_srcv->body_data) {
     pdu->body_data = lg_srcv->body_data->s;
     pdu->body_length = lg_srcv->total_len;
   } else {
