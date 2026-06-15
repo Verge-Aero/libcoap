@@ -867,6 +867,7 @@ coap_proxy_forward_response_lkd(coap_session_t *session,
     coap_add_data_large_response_lkd(resource, incoming, req_pdu, pdu,
                                      l_query,
                                      media_type, maxage, etag, size, data,
+                                     NULL,
                                      coap_proxy_release_body_data,
                                      body_data);
     body_data = NULL;

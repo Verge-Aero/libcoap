@@ -166,6 +166,12 @@ struct coap_lg_xmit_t {
 #endif /* COAP_Q_BLOCK_SUPPORT */
   coap_release_large_data_t release_func; /**< large data de-alloc function */
   void *app_ptr;         /**< applicaton provided ptr for de-alloc function */
+  coap_get_block_data_t read_func; /**< If set, the body is read on demand a block at a time via
+                                        this callback (into scratch) instead of from ->data, so a
+                                        body larger than RAM can be sent from storage. */
+  void *read_app_ptr;    /**< app pointer for read_func */
+  uint8_t *scratch;      /**< one-block staging buffer for read_func (NULL if not streaming) */
+  size_t scratch_size;   /**< size of scratch */
 };
 
 #if COAP_CLIENT_SUPPORT
@@ -378,6 +384,7 @@ int coap_add_data_large_response_lkd(coap_resource_t *resource,
                                      uint64_t etag,
                                      size_t length,
                                      const uint8_t *data,
+                                     coap_get_block_data_t read_func,
                                      coap_release_large_data_t release_func,
                                      void *app_ptr);
 

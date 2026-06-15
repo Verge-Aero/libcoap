@@ -475,6 +475,81 @@ COAP_API int coap_add_data_large_response(coap_resource_t *resource,
                                           void *app_ptr);
 
 /**
+ * Callback to read @p length bytes of a large body at @p offset into @p buf, used by the streaming
+ * coap_add_data_large_*_stream() variants. The library calls this on demand for each block it sends
+ * (including retransmits and Q-Block missing-block recovery, which may re-read earlier offsets), so
+ * the source must be random-offset readable. This lets a constrained device send a body larger than
+ * its RAM straight from storage — only one block is held in memory at a time.
+ *
+ * @param session The session the body is being sent on.
+ * @param app_ptr The application pointer passed to coap_add_data_large_*_stream().
+ * @param offset  Byte offset of the requested block within the full body.
+ * @param length  Number of bytes to read.
+ * @param buf     Buffer of at least @p length bytes to read into.
+ *
+ * @return Number of bytes read into @p buf (should equal @p length for an in-range block).
+ */
+typedef size_t (*coap_get_block_data_t)(coap_session_t *session, void *app_ptr,
+                                        size_t offset, size_t length, uint8_t *buf);
+
+/**
+ * Streaming variant of coap_add_data_large_request(): the body of @p total_length bytes is read on
+ * demand via @p read_func instead of being supplied up front, so only one block is held in RAM.
+ * Otherwise identical to coap_add_data_large_request(). @p release_func (if not NULL) is called when
+ * the transfer completes or fails.
+ *
+ * @param session       The session to associate the data with.
+ * @param pdu           The PDU to associate the data with.
+ * @param total_length  The total length of the body.
+ * @param read_func     Callback to read each block of the body on demand.
+ * @param release_func  Called when the body has been transmitted or failed, or NULL.
+ * @param app_ptr       Application pointer passed to @p read_func and @p release_func.
+ *
+ * @return @c 1 if addition is successful, else @c 0.
+ */
+COAP_API int coap_add_data_large_request_stream(coap_session_t *session,
+                                                coap_pdu_t *pdu,
+                                                size_t total_length,
+                                                coap_get_block_data_t read_func,
+                                                coap_release_large_data_t release_func,
+                                                void *app_ptr);
+
+/**
+ * Streaming variant of coap_add_data_large_response(): the body of @p total_length bytes is read on
+ * demand via @p read_func instead of being supplied up front, so only one block is held in RAM. This
+ * lets a server serve a body larger than its RAM from storage, with Q-Block2 burst. Otherwise
+ * identical to coap_add_data_large_response(). @p release_func (if not NULL) is called when the
+ * transfer completes or fails.
+ *
+ * @param resource      The resource the data is associated with.
+ * @param session       The coap session.
+ * @param request       The requesting pdu.
+ * @param response      The response pdu.
+ * @param query         The query taken from the (original) requesting pdu.
+ * @param media_type    The content format of the data.
+ * @param maxage        The maximum life of the data, or -1 for none.
+ * @param etag          ETag to use if not 0.
+ * @param total_length  The total length of the body.
+ * @param read_func     Callback to read each block of the body on demand.
+ * @param release_func  Called when the body has been transmitted or failed, or NULL.
+ * @param app_ptr       Application pointer passed to @p read_func and @p release_func.
+ *
+ * @return @c 1 if addition is successful, else @c 0.
+ */
+COAP_API int coap_add_data_large_response_stream(coap_resource_t *resource,
+                                                 coap_session_t *session,
+                                                 const coap_pdu_t *request,
+                                                 coap_pdu_t *response,
+                                                 const coap_string_t *query,
+                                                 uint16_t media_type,
+                                                 int maxage,
+                                                 uint64_t etag,
+                                                 size_t total_length,
+                                                 coap_get_block_data_t read_func,
+                                                 coap_release_large_data_t release_func,
+                                                 void *app_ptr);
+
+/**
  * Set the context level CoAP block handling bits for handling RFC7959.
  * These bits flow down to a session when a session is created and if the peer
  * does not support something, an appropriate bit may get disabled in the

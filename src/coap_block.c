@@ -263,6 +263,59 @@ coap_add_block_b_data(coap_pdu_t *pdu, size_t len, const uint8_t *data,
 }
 
 /*
+ * lg_xmit body access for sending. With an in-RAM body (read_func == NULL) these defer to the
+ * public coap_add_block()/coap_add_block_b_data() so behaviour is byte-identical. When streaming
+ * (read_func set, ->data NULL) the requested block is read on demand into ->scratch — so only one
+ * block is ever in memory, letting a body larger than RAM be sent from storage. read_func is called
+ * for every block, including retransmits and Q-Block missing-block recovery (which re-read earlier
+ * offsets), hence the requirement that the source be random-offset readable.
+ */
+static const uint8_t *
+coap_lg_xmit_block_ptr(coap_session_t *session, coap_lg_xmit_t *lg_xmit,
+                       size_t offset, size_t length) {
+  if (lg_xmit->read_func) {
+    lg_xmit->read_func(session, lg_xmit->read_app_ptr, offset, length, lg_xmit->scratch);
+    return lg_xmit->scratch;
+  }
+  return lg_xmit->data + offset;
+}
+
+static int
+coap_add_block_lg(coap_pdu_t *pdu, coap_session_t *session, coap_lg_xmit_t *lg_xmit,
+                  unsigned int block_num, unsigned char block_szx) {
+  size_t start = (size_t)block_num << (block_szx + 4);
+  size_t len;
+
+  if (!lg_xmit->read_func)
+    return coap_add_block(pdu, lg_xmit->length, lg_xmit->data, block_num, block_szx);
+  if (lg_xmit->length <= start)
+    return 0;
+  len = min(lg_xmit->length - start, ((size_t)1 << (block_szx + 4)));
+  return coap_add_data(pdu, len, coap_lg_xmit_block_ptr(session, lg_xmit, start, len));
+}
+
+static int
+coap_add_block_b_data_lg(coap_pdu_t *pdu, coap_session_t *session, coap_lg_xmit_t *lg_xmit,
+                         coap_block_b_t *block) {
+  size_t start = (size_t)block->num << (block->szx + 4);
+  size_t max_size, len;
+
+  if (!lg_xmit->read_func)
+    return coap_add_block_b_data(pdu, lg_xmit->length, lg_xmit->data, block);
+  if (lg_xmit->length <= start)
+    return 0;
+  if (block->bert) {
+    size_t token_options = pdu->data ? (size_t)(pdu->data - pdu->token) : pdu->used_size;
+    max_size = ((pdu->max_size - token_options) / 1024) * 1024;
+  } else {
+    max_size = (size_t)1 << (block->szx + 4);
+  }
+  block->chunk_size = (uint32_t)max_size;
+  len = min(lg_xmit->length - start, max_size);
+  return coap_add_data(pdu, len, coap_lg_xmit_block_ptr(session, lg_xmit, start, len));
+}
+
+/*
  * Note that the COAP_OPTION_ have to be added in the correct order
  */
 void
@@ -641,6 +694,7 @@ coap_add_data_large_internal(coap_session_t *session,
                              uint64_t etag,
                              size_t length,
                              const uint8_t *data,
+                             coap_get_block_data_t read_func,
                              coap_release_large_data_t release_func,
                              void *app_ptr,
                              int single_request, coap_pdu_code_t request_method) {
@@ -863,8 +917,20 @@ coap_add_data_large_internal(coap_session_t *session,
       rem = chunk;
       if (chunk > length - block.num * chunk)
         rem = length - block.num * chunk;
-      if (!coap_add_data(pdu, rem, &data[block.num * chunk]))
+      if (read_func) {
+        /* streaming: read just this requested block into a temporary one-block buffer */
+        uint8_t *tmp = coap_malloc_type(COAP_STRING, rem ? rem : 1);
+        int radd;
+        if (!tmp)
+          goto fail;
+        read_func(session, app_ptr, block.num * chunk, rem, tmp);
+        radd = coap_add_data(pdu, rem, tmp);
+        coap_free_type(COAP_STRING, tmp);
+        if (!radd)
+          goto fail;
+      } else if (!coap_add_data(pdu, rem, &data[block.num * chunk])) {
         goto fail;
+      }
     }
     if (release_func) {
       coap_lock_callback(session->context, release_func(session, app_ptr));
@@ -877,13 +943,15 @@ coap_add_data_large_internal(coap_session_t *session,
     if (!lg_xmit)
       goto fail;
 
-    /* Set up for displaying all the data in the pdu */
-    pdu->body_data = data;
-    pdu->body_length = length;
-    coap_log_debug("PDU presented by app.\n");
-    coap_show_pdu(COAP_LOG_DEBUG, pdu);
-    pdu->body_data = NULL;
-    pdu->body_length = 0;
+    /* Set up for displaying all the data in the pdu (skip for a streamed body — not in RAM) */
+    if (data) {
+      pdu->body_data = data;
+      pdu->body_length = length;
+      coap_log_debug("PDU presented by app.\n");
+      coap_show_pdu(COAP_LOG_DEBUG, pdu);
+      pdu->body_data = NULL;
+      pdu->body_length = 0;
+    }
 
     coap_log_debug("** %s: lg_xmit %p initialized\n",
                    coap_session_str(session), (void *)lg_xmit);
@@ -893,6 +961,15 @@ coap_add_data_large_internal(coap_session_t *session,
     lg_xmit->option = option;
     lg_xmit->data = data;
     lg_xmit->length = length;
+    if (read_func) {
+      /* Streaming send: body read on demand into a one-block scratch instead of held in RAM. */
+      lg_xmit->read_func = read_func;
+      lg_xmit->read_app_ptr = app_ptr;
+      lg_xmit->scratch_size = pdu->max_size ? pdu->max_size : 1024;
+      lg_xmit->scratch = coap_malloc_type(COAP_STRING, lg_xmit->scratch_size);
+      if (!lg_xmit->scratch)
+        goto fail;
+    }
 #if COAP_Q_BLOCK_SUPPORT
     lg_xmit->non_timeout_random_ticks =
         coap_get_non_timeout_random_ticks(session);
@@ -1039,7 +1116,8 @@ coap_add_data_large_internal(coap_session_t *session,
     rem = block.chunk_size;
     if (rem > lg_xmit->length - block.num * chunk)
       rem = lg_xmit->length - block.num * chunk;
-    if (!coap_add_data(pdu, rem, &data[block.num * chunk]))
+    if (!coap_add_data(pdu, rem,
+                       coap_lg_xmit_block_ptr(session, lg_xmit, block.num * chunk, rem)))
       goto fail;
 
     if (COAP_PDU_IS_REQUEST(pdu))
@@ -1064,8 +1142,22 @@ coap_add_data_large_internal(coap_session_t *session,
                                               (0 << 4) | (0 << 3) | blk_size), buf);
     }
 add_data:
-    if (!coap_add_data(pdu, length, data))
+    if (read_func) {
+      /* streaming: a body small enough to send in one PDU — read it whole (<= one block) */
+      uint8_t *tmp = length ? coap_malloc_type(COAP_STRING, length) : NULL;
+      int radd;
+      if (length && !tmp)
+        goto fail;
+      if (length)
+        read_func(session, app_ptr, 0, length, tmp);
+      radd = coap_add_data(pdu, length, tmp);
+      if (tmp)
+        coap_free_type(COAP_STRING, tmp);
+      if (!radd)
+        goto fail;
+    } else if (!coap_add_data(pdu, length, data)) {
       goto fail;
+    }
 
     if (release_func) {
       coap_lock_callback(session->context, release_func(session, app_ptr));
@@ -1118,7 +1210,30 @@ coap_add_data_large_request_lkd(coap_session_t *session,
     return 0;
   }
   return coap_add_data_large_internal(session, NULL, pdu, NULL, NULL, -1, 0,
-                                      length, data, release_func, app_ptr, 0, 0);
+                                      length, data, NULL, release_func, app_ptr, 0, 0);
+}
+
+COAP_API int
+coap_add_data_large_request_stream(coap_session_t *session,
+                                   coap_pdu_t *pdu,
+                                   size_t total_length,
+                                   coap_get_block_data_t read_func,
+                                   coap_release_large_data_t release_func,
+                                   void *app_ptr) {
+  int ret;
+
+  coap_lock_lock(session->context, return 0);
+  if (coap_client_delay_first(session) == 0) {
+    if (release_func) {
+      coap_lock_callback(session->context, release_func(session, app_ptr));
+    }
+    coap_lock_unlock(session->context);
+    return 0;
+  }
+  ret = coap_add_data_large_internal(session, NULL, pdu, NULL, NULL, -1, 0,
+                                     total_length, NULL, read_func, release_func, app_ptr, 0, 0);
+  coap_lock_unlock(session->context);
+  return ret;
 }
 #endif /* ! COAP_CLIENT_SUPPORT */
 
@@ -1142,7 +1257,31 @@ coap_add_data_large_response(coap_resource_t *resource,
   coap_lock_lock(session->context, return 0);
   ret = coap_add_data_large_response_lkd(resource, session, request,
                                          response, query, media_type, maxage, etag,
-                                         length, data, release_func, app_ptr);
+                                         length, data, NULL, release_func, app_ptr);
+  coap_lock_unlock(session->context);
+  return ret;
+}
+
+COAP_API int
+coap_add_data_large_response_stream(coap_resource_t *resource,
+                                    coap_session_t *session,
+                                    const coap_pdu_t *request,
+                                    coap_pdu_t *response,
+                                    const coap_string_t *query,
+                                    uint16_t media_type,
+                                    int maxage,
+                                    uint64_t etag,
+                                    size_t total_length,
+                                    coap_get_block_data_t read_func,
+                                    coap_release_large_data_t release_func,
+                                    void *app_ptr
+                                   ) {
+  int ret;
+
+  coap_lock_lock(session->context, return 0);
+  ret = coap_add_data_large_response_lkd(resource, session, request,
+                                         response, query, media_type, maxage, etag,
+                                         total_length, NULL, read_func, release_func, app_ptr);
   coap_lock_unlock(session->context);
   return ret;
 }
@@ -1158,6 +1297,7 @@ coap_add_data_large_response_lkd(coap_resource_t *resource,
                                  uint64_t etag,
                                  size_t length,
                                  const uint8_t *data,
+                                 coap_get_block_data_t read_func,
                                  coap_release_large_data_t release_func,
                                  void *app_ptr
                                 ) {
@@ -1244,7 +1384,7 @@ coap_add_data_large_response_lkd(coap_resource_t *resource,
   if (request &&
       !coap_add_data_large_internal(session, request, response, resource,
                                     query, maxage, etag, length, data,
-                                    release_func, app_ptr, single_request,
+                                    read_func, release_func, app_ptr, single_request,
                                     request->code)) {
     response->code = COAP_RESPONSE_CODE(500);
     goto error_released;
@@ -1919,11 +2059,9 @@ coap_send_q_blocks(coap_session_t *session,
       break;
     }
 
-    if (!coap_add_block(block_pdu,
-                        lg_xmit->length,
-                        lg_xmit->data,
-                        block.num,
-                        block.szx)) {
+    if (!coap_add_block_lg(block_pdu, session, lg_xmit,
+                           block.num,
+                           block.szx)) {
       coap_log_warn("Internal update issue data\n");
       coap_delete_pdu_lkd(block_pdu);
       coap_delete_pdu_lkd(t_pdu);
@@ -2354,6 +2492,9 @@ coap_block_delete_lg_xmit(coap_session_t *session,
   if (lg_xmit->release_func) {
     coap_lock_callback(session->context, lg_xmit->release_func(session, lg_xmit->app_ptr));
   }
+  if (lg_xmit->scratch) {
+    coap_free_type(COAP_STRING, lg_xmit->scratch);
+  }
   if (lg_xmit->pdu.token) {
     coap_free_type(COAP_PDU_BUF, lg_xmit->pdu.token - lg_xmit->pdu.max_hdr_size);
   }
@@ -2688,10 +2829,8 @@ coap_handle_request_send_block(coap_session_t *session,
       }
     }
 
-    if (!etag_opt && !coap_add_block_b_data(out_pdu,
-                                            lg_xmit->length,
-                                            lg_xmit->data,
-                                            &block)) {
+    if (!etag_opt && !coap_add_block_b_data_lg(out_pdu, session, lg_xmit,
+                                               &block)) {
       goto internal_issue;
     }
     if (i + 1 < request_cnt) {
@@ -3274,9 +3413,9 @@ check_freshness(coap_session_t *session, coap_pdu_t *rcvd, coap_pdu_t *sent,
           size_t blk_size = (size_t)1 << (lg_xmit->blk_size + 4);
           size_t offset = (lg_xmit->last_block + 1) * blk_size;
           have_data = 1;
-          data = &lg_xmit->data[offset];
           data_len = (lg_xmit->length - offset) > blk_size ? blk_size :
                      lg_xmit->length - offset;
+          data = coap_lg_xmit_block_ptr(session, lg_xmit, offset, data_len);
         }
       } else { /* lg_crcv */
         sent = &lg_crcv->pdu;
@@ -3481,10 +3620,8 @@ coap_handle_response_send_block(coap_session_t *session, coap_pdu_t *sent,
                                                 block.aszx),
                            buf);
 
-        if (!coap_add_block_b_data(pdu,
-                                   lg_xmit->length,
-                                   lg_xmit->data,
-                                   &block))
+        if (!coap_add_block_b_data_lg(pdu, session, lg_xmit,
+                                      &block))
           goto fail_body;
         lg_xmit->b.b1.bert_size = block.chunk_size;
         coap_ticks(&lg_xmit->last_sent);
@@ -3600,11 +3737,9 @@ coap_handle_response_send_block(coap_session_t *session, coap_pdu_t *sent,
                                                   block.szx),
                              buf);
 
-          if (!coap_add_block(pdu,
-                              lg_xmit->length,
-                              lg_xmit->data,
-                              block.num,
-                              block.szx))
+          if (!coap_add_block_lg(pdu, session, lg_xmit,
+                                 block.num,
+                                 block.szx))
             goto fail_body;
           if (coap_send_internal(session, pdu) == COAP_INVALID_MID)
             goto fail_body;
@@ -4034,7 +4169,7 @@ reinit:
 
               if (session->block_mode & COAP_BLOCK_STLESS_FETCH && pdu->code == COAP_REQUEST_CODE_FETCH) {
                 (void)coap_get_data(&lg_crcv->pdu, &length, &data);
-                coap_add_data_large_internal(session, NULL, pdu, NULL, NULL, -1, 0, length, data, NULL, NULL, 0, 0);
+                coap_add_data_large_internal(session, NULL, pdu, NULL, NULL, -1, 0, length, data, NULL, NULL, NULL, 0, 0);
               }
               if (coap_send_internal(session, pdu) == COAP_INVALID_MID)
                 goto fail_resp;

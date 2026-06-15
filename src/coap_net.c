@@ -2833,6 +2833,7 @@ hnd_get_wellknown_lkd(coap_resource_t *resource,
                                                  COAP_MEDIATYPE_APPLICATION_LINK_FORMAT,
                                                  -1, 0, data_string->length,
                                                  data_string->s,
+                                                 NULL,
                                                  free_wellknown_response,
                                                  data_string)) {
       goto error_released;
