@@ -1511,9 +1511,13 @@ coap_send_lkd(coap_session_t *session, coap_pdu_t *pdu) {
   }
 
 #if COAP_Q_BLOCK_SUPPORT
-  /* Indicate support for Q-Block if appropriate */
+  /* Indicate support for Q-Block if appropriate. Never on a multicast session: the probe is a
+   * Confirmable GET, which RFC 7252 8.1 forbids to a multicast destination, and Q-Block negotiation
+   * is meaningless for multicast (it has no single peer to confirm support) — such a session just
+   * sends NON and falls back to plain block-wise. */
   if (session->block_mode & COAP_BLOCK_TRY_Q_BLOCK &&
       session->type == COAP_SESSION_TYPE_CLIENT &&
+      !coap_is_mcast(&session->addr_info.remote) &&
       COAP_PDU_IS_REQUEST(pdu)) {
     if (coap_block_test_q_block(session, pdu) == COAP_INVALID_MID) {
       goto error;
