@@ -204,6 +204,10 @@ struct coap_lg_crcv_t {
   coap_pdu_t pdu;        /**< skeletal PDU */
   coap_rblock_t rec_blocks; /** < list of received blocks */
   coap_tick_t last_used; /**< Last time all data sent or 0 */
+  coap_block_body_write_t stream_write; /**< If set (via coap_request_set_block_stream() on the
+                                             request), each received block is written here as it
+                                             arrives instead of accumulated into body_data */
+  void *stream_app_ptr;  /**< app pointer for stream_write */
 };
 #endif /* COAP_CLIENT_SUPPORT */
 

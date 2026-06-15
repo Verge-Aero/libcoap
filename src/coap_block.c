@@ -2355,6 +2355,17 @@ coap_block_test_q_block(coap_session_t *session, coap_pdu_t *actual) {
 }
 #endif /* COAP_Q_BLOCK_SUPPORT */
 
+int
+coap_request_set_block_stream(coap_pdu_t *request,
+                              coap_block_body_write_t write_fn,
+                              void *app_ptr) {
+  if (!request || !write_fn)
+    return 0;
+  request->stream_write = write_fn;
+  request->stream_app_ptr = app_ptr;
+  return 1;
+}
+
 coap_lg_crcv_t *
 coap_block_new_lg_crcv(coap_session_t *session, coap_pdu_t *pdu,
                        coap_lg_xmit_t *lg_xmit) {
@@ -2363,7 +2374,10 @@ coap_block_new_lg_crcv(coap_session_t *session, coap_pdu_t *pdu,
   uint64_t state_token = STATE_TOKEN_FULL(++session->tx_token, 1);
   size_t token_options = pdu->data ? (size_t)(pdu->data - pdu->token) :
                          pdu->used_size;
-  size_t data_len = lg_xmit ? lg_xmit->length :
+  /* For a streaming send (lg_xmit->read_func) the body is not in RAM, so the skeletal PDU carries
+     no body — request-block retransmits read from lg_xmit->read_func instead. */
+  size_t data_len = (lg_xmit && lg_xmit->read_func) ? 0 :
+                    lg_xmit ? lg_xmit->length :
                     pdu->data ?
                     pdu->used_size - (pdu->data - pdu->token) : 0;
 
@@ -2377,6 +2391,10 @@ coap_block_new_lg_crcv(coap_session_t *session, coap_pdu_t *pdu,
                  STATE_TOKEN_BASE(state_token));
   memset(lg_crcv, 0, sizeof(coap_lg_crcv_t));
   lg_crcv->initial = 1;
+  /* Carry a streaming-receive sink from the request (coap_request_set_block_stream) so the body is
+     written block-by-block to the app instead of accumulated. */
+  lg_crcv->stream_write = pdu->stream_write;
+  lg_crcv->stream_app_ptr = pdu->stream_app_ptr;
   coap_ticks(&lg_crcv->last_used);
   /* Set up skeletal PDU to use as a basis for all the subsequent blocks */
   memcpy(&lg_crcv->pdu, pdu, sizeof(lg_crcv->pdu));
@@ -2392,9 +2410,15 @@ coap_block_new_lg_crcv(coap_session_t *session, coap_pdu_t *pdu,
   lg_crcv->pdu.token += lg_crcv->pdu.max_hdr_size;
   memcpy(lg_crcv->pdu.token, pdu->token, token_options);
   if (lg_crcv->pdu.data) {
-    lg_crcv->pdu.data = lg_crcv->pdu.token + token_options;
-    assert(pdu->data);
-    memcpy(lg_crcv->pdu.data, lg_xmit ? lg_xmit->data : pdu->data, data_len);
+    if (lg_xmit && lg_xmit->read_func) {
+      /* streaming send: no body materialized in the skeletal PDU */
+      lg_crcv->pdu.data = NULL;
+      lg_crcv->pdu.used_size = token_options;
+    } else {
+      lg_crcv->pdu.data = lg_crcv->pdu.token + token_options;
+      assert(pdu->data);
+      memcpy(lg_crcv->pdu.data, lg_xmit ? lg_xmit->data : pdu->data, data_len);
+    }
   }
 
   /* Need to keep original token for updating response PDUs */
@@ -4100,7 +4124,14 @@ reinit:
         block.num--;
         /* Only process if not duplicate block */
         if (updated_block) {
-          if ((session->block_mode & COAP_SINGLE_BLOCK_OR_Q) || block.bert) {
+          if (lg_crcv->stream_write) {
+            /* Streaming: write this block straight to the app sink (out of order possible); never
+               buffer the body. Recovery still rides on rec_blocks. */
+            if (size2 < saved_offset + length)
+              size2 = saved_offset + length;
+            if (length)
+              lg_crcv->stream_write(session, lg_crcv->stream_app_ptr, saved_offset, data, length);
+          } else if ((session->block_mode & COAP_SINGLE_BLOCK_OR_Q) || block.bert) {
             if (size2 < saved_offset + length) {
               size2 = saved_offset + length;
             }
@@ -4174,7 +4205,8 @@ reinit:
               if (coap_send_internal(session, pdu) == COAP_INVALID_MID)
                 goto fail_resp;
             }
-            if ((session->block_mode & COAP_SINGLE_BLOCK_OR_Q) ||  block.bert)
+            if ((session->block_mode & COAP_SINGLE_BLOCK_OR_Q) ||  block.bert ||
+                lg_crcv->stream_write)   /* streamed: blocks go to the sink, not per-block to the handler */
               goto skip_app_handler;
 
             /* need to put back original token into rcvd */
@@ -4201,7 +4233,24 @@ reinit:
 #if COAP_Q_BLOCK_SUPPORT
 give_to_app:
 #endif /* COAP_Q_BLOCK_SUPPORT */
-          if ((session->block_mode & COAP_SINGLE_BLOCK_OR_Q) || block.bert) {
+          if (lg_crcv->stream_write) {
+            /* Streamed: every block was already written to the sink. Deliver a NULL body with the
+               completion flag so the response handler can finish the sink. */
+            coap_remove_option(rcvd, block_opt);
+            if (lg_crcv->observe_set) {
+              coap_update_option(rcvd, COAP_OPTION_OBSERVE,
+                                 lg_crcv->observe_length, lg_crcv->observe);
+            }
+            rcvd->body_data = NULL;
+            rcvd->body_length = 0;
+            rcvd->body_offset = 0;
+#if COAP_Q_BLOCK_SUPPORT
+            rcvd->body_total = block_opt == COAP_OPTION_Q_BLOCK2 ? lg_crcv->total_len : size2;
+#else /* ! COAP_Q_BLOCK_SUPPORT */
+            rcvd->body_total = size2;
+#endif /* ! COAP_Q_BLOCK_SUPPORT */
+            rcvd->body_complete = 1;
+          } else if ((session->block_mode & COAP_SINGLE_BLOCK_OR_Q) || block.bert) {
             /* Pretend that there is no block */
             coap_remove_option(rcvd, block_opt);
             if (lg_crcv->observe_set) {

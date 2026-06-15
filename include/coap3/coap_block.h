@@ -363,6 +363,24 @@ void coap_resource_set_block_stream(coap_resource_t *resource,
 int coap_get_block_body_complete(const coap_pdu_t *pdu);
 
 /**
+ * Stream the (large, block-wise) response body to this request straight to the application's sink as
+ * each block arrives, instead of buffering the whole body before the response handler is called.
+ * Call on a client request PDU before sending it. Each block is written to @p write_fn (out of order
+ * possible); the response handler is then invoked once, when the full body has arrived, with a NULL
+ * body and coap_get_block_body_complete() == 1. Bounds client receive memory to one block plus the
+ * missing-block bitmap, so a body larger than RAM can be received from a peer (incl. with Q-Block).
+ *
+ * @param request  The client request PDU.
+ * @param write_fn Callback to write each received block to the sink.
+ * @param app_ptr  Application pointer passed to @p write_fn.
+ *
+ * @return @c 1 on success, else @c 0.
+ */
+int coap_request_set_block_stream(coap_pdu_t *request,
+                                  coap_block_body_write_t write_fn,
+                                  void *app_ptr);
+
+/**
  * Associates given data with the @p pdu that is passed as second parameter.
  *
  * This function will fail if data has already been added to the @p pdu.

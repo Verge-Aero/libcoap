@@ -174,6 +174,10 @@ struct coap_pdu_t {
   uint8_t body_complete;    /**< Set on the completion handler call of a streamed
                                  large body (COAP_BLOCK_STREAM_BODY); see
                                  coap_get_block_body_complete() */
+  coap_block_body_write_t stream_write; /**< On a client request: stream each received response
+                                             block here as it arrives (set via
+                                             coap_request_set_block_stream()); copied to lg_crcv */
+  void *stream_app_ptr;     /**< app pointer for stream_write */
   coap_lg_xmit_t *lg_xmit;  /**< Holds ptr to lg_xmit if sending a set of
                                  blocks */
   coap_session_t *session;  /**< Session responsible for PDU or NULL */

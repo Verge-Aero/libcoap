@@ -61,6 +61,9 @@ coap_pdu_clear(coap_pdu_t *pdu, size_t size) {
   pdu->body_length = 0;
   pdu->body_offset = 0;
   pdu->body_total = 0;
+  pdu->body_complete = 0;
+  pdu->stream_write = NULL;
+  pdu->stream_app_ptr = NULL;
   pdu->lg_xmit = NULL;
   pdu->session = NULL;
   pdu->data_free = NULL;
