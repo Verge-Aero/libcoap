@@ -2513,6 +2513,25 @@ coap_block_delete_lg_xmit(coap_session_t *session,
   if (lg_xmit == NULL)
     return;
 
+  /* A queued / delayed / retransmit-pending PDU may still reference this lg_xmit via pdu->lg_xmit (set
+   * by the send path, e.g. lines 979 and 1981). Freeing the lg_xmit while such a PDU is on a queue leaves
+   * a dangling pointer: a later transmit — a delayqueue flush, a CON retransmit, or Q-Block2 recovery via
+   * coap_send_q_blocks(sent->pdu->lg_xmit) — would read the freed struct's read_func / read_app_ptr and
+   * dispatch into a freed streaming cookie, crashing (observed after a cancelled download: the serve
+   * lg_xmit is reaped while a block PDU is still queued). Sever those references first; coap_send_q_blocks
+   * tolerates a NULL lg_xmit (it sends the PDU as-is or skips it). An lg_xmit belongs to one session, so
+   * matching pdu->lg_xmit is sufficient. */
+  {
+    coap_queue_t *q;
+    for (q = session->delayqueue; q; q = q->next)
+      if (q->pdu && q->pdu->lg_xmit == lg_xmit)
+        q->pdu->lg_xmit = NULL;
+    if (session->context)
+      for (q = session->context->sendqueue; q; q = q->next)
+        if (q->pdu && q->pdu->lg_xmit == lg_xmit)
+          q->pdu->lg_xmit = NULL;
+  }
+
   if (lg_xmit->release_func) {
     coap_lock_callback(session->context, lg_xmit->release_func(session, lg_xmit->app_ptr));
   }
