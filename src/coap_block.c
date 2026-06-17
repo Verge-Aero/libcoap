@@ -785,7 +785,16 @@ coap_add_data_large_internal(coap_session_t *session,
     /* Have to assume that it is a response even if code is 0.00 */
     assert(resource);
 #if COAP_Q_BLOCK_SUPPORT
-    if (session->block_mode & COAP_BLOCK_HAS_Q_BLOCK) {
+    /*
+     * RFC 9177 treats Q-Block2 as a per-request option, not a sticky session
+     * capability. Serve Q-Block2 only when THIS request asked for it, so a
+     * plain Block2 (or option-less) request is served plain Block2 even on a
+     * session that previously served Q-Block2. Stock libcoap keyed this off a
+     * set-once COAP_BLOCK_HAS_Q_BLOCK session flag, which forced every later
+     * transfer onto Q-Block2 and made per-request mode selection impossible.
+     */
+    if (request &&
+        coap_get_block_b(session, request, COAP_OPTION_Q_BLOCK2, &alt_block)) {
       option = COAP_OPTION_Q_BLOCK2;
       alt_option = COAP_OPTION_BLOCK2;
     } else {
@@ -1306,8 +1315,10 @@ coap_add_data_large_response_lkd(coap_resource_t *resource,
   int block_requested = 0;
   int single_request = 0;
 #if COAP_Q_BLOCK_SUPPORT
-  uint32_t block_opt = (session->block_mode & COAP_BLOCK_HAS_Q_BLOCK) ?
-                       COAP_OPTION_Q_BLOCK2 : COAP_OPTION_BLOCK2;
+  /* Per-request: default to plain Block2; upgraded to Q-Block2 below only if
+     THIS request carried a Q-Block2 option (RFC 9177 — not inherited from a
+     sticky session capability). */
+  uint32_t block_opt = COAP_OPTION_BLOCK2;
 #else /* ! COAP_Q_BLOCK_SUPPORT */
   uint16_t block_opt = COAP_OPTION_BLOCK2;
 #endif /* ! COAP_Q_BLOCK_SUPPORT */
@@ -1338,10 +1349,11 @@ coap_add_data_large_response_lkd(coap_resource_t *resource,
         response->code = COAP_RESPONSE_CODE(400);
         goto error;
       }
-      if (!(session->block_mode & COAP_BLOCK_HAS_Q_BLOCK)) {
-        set_block_mode_has_q(session->block_mode);
-        block_opt = COAP_OPTION_Q_BLOCK2;
-      }
+      /* This request asked for Q-Block2 — serve Q-Block2 for THIS response.
+         set_block_mode_has_q only records the peer capability (idempotent; used
+         for session-wide timeout selection), it no longer gates the option. */
+      block_opt = COAP_OPTION_Q_BLOCK2;
+      set_block_mode_has_q(session->block_mode);
       if (block.m == 0)
         single_request = 1;
     }
