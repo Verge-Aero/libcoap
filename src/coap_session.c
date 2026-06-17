@@ -146,7 +146,7 @@ coap_session_fix_non_partial_timeout(coap_session_t *s) {
 
 void
 coap_session_set_ack_timeout(coap_session_t *session, coap_fixed_point_t value) {
-  if (value.integer_part > 0 && value.fractional_part < 1000) {
+  if ((value.integer_part > 0 || value.fractional_part > 0) && value.fractional_part < 1000) {
     session->ack_timeout = value;
     coap_log_debug("***%s: session ack_timeout set to %u.%03u\n",
                    coap_session_str(session), session->ack_timeout.integer_part,
@@ -191,7 +191,7 @@ coap_session_set_nstart(coap_session_t *session, uint16_t value) {
 void
 coap_session_set_default_leisure(coap_session_t *session,
                                  coap_fixed_point_t value) {
-  if (value.integer_part > 0 && value.fractional_part < 1000) {
+  if ((value.integer_part > 0 || value.fractional_part > 0) && value.fractional_part < 1000) {
     session->default_leisure = value;
     coap_log_debug("***%s: session default_leisure set to %u.%03u\n",
                    coap_session_str(session), session->default_leisure.integer_part,
@@ -244,7 +244,7 @@ void
 coap_session_set_non_timeout(coap_session_t *session,
                              coap_fixed_point_t value) {
 #if COAP_Q_BLOCK_SUPPORT
-  if (value.integer_part > 0 && value.fractional_part < 1000) {
+  if ((value.integer_part > 0 || value.fractional_part > 0) && value.fractional_part < 1000) {
     session->non_timeout = value;
     coap_log_debug("***%s: session non_timeout set to %u.%03u\n",
                    coap_session_str(session), session->non_timeout.integer_part,
@@ -262,7 +262,7 @@ void
 coap_session_set_non_receive_timeout(coap_session_t *session,
                                      coap_fixed_point_t value) {
 #if COAP_Q_BLOCK_SUPPORT
-  if (value.integer_part > 0 && value.fractional_part < 1000)
+  if ((value.integer_part > 0 || value.fractional_part > 0) && value.fractional_part < 1000)
     session->non_receive_timeout = value;
   coap_log_debug("***%s: session non_receive_timeout set to %u.%03u\n",
                  coap_session_str(session),
