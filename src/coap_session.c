@@ -550,6 +550,12 @@ coap_session_mfree(coap_session_t *session) {
     }
     coap_delete_node_lkd(q);
   }
+  /* The loop above freed every delayqueue node but left the head pointing at freed memory. Null it
+   * before freeing the lg_xmits below: coap_block_delete_lg_xmit now walks session->delayqueue to sever
+   * any pdu->lg_xmit that still references the lg_xmit being freed, and reading a dangling head here
+   * would be a use-after-free (seen as a segfault on session teardown / device reconnect). The freed
+   * PDUs are gone, so there is nothing left to sever — an empty list is correct. */
+  session->delayqueue = NULL;
   LL_FOREACH_SAFE(session->lg_xmit, lq, ltmp) {
     LL_DELETE(session->lg_xmit, lq);
     coap_block_delete_lg_xmit(session, lq);
