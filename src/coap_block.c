@@ -1433,6 +1433,13 @@ coap_block_check_lg_xmit_timeouts(coap_session_t *session, coap_tick_t now,
   coap_tick_t idle_timeout = 8 * COAP_TICKS_PER_SECOND;
 #endif /* ! COAP_Q_BLOCK_SUPPORT */
   coap_tick_t partial_timeout = COAP_MAX_TRANSMIT_WAIT_TICKS(session);
+  /* verge: a SERVE (response) lg_xmit abandoned mid-stream — the peer stopped pulling (cancel / death /
+   * stall) — otherwise pins the serve and its app resource (e.g. the open file freed via release_func)
+   * until MAX_TRANSMIT_WAIT (tens of seconds, coupled to the retransmit params), wedging the serve slots
+   * after a few stalls. Reap a serve on a dedicated, shorter bound so cancel/failure cleanup is prompt and
+   * reliable. Kept above the worst-case CON retransmit backoff so a live-but-recovering serve is never cut
+   * short; outbound REQUESTS (our PUTs) keep MAX_TRANSMIT_WAIT (don't shorten a slow upload). */
+  coap_tick_t serve_timeout = 30 * COAP_TICKS_PER_SECOND;
   int ret = 0;
 
   *tim_rem = -1;
@@ -1451,15 +1458,17 @@ coap_block_check_lg_xmit_timeouts(coap_session_t *session, coap_tick_t now,
         }
       }
     } else if (lg_xmit->last_sent) {
-      if (lg_xmit->last_sent + partial_timeout <= now) {
+      /* A serve (response) uses the shorter serve_timeout; an outbound request (PUT) keeps partial_timeout. */
+      coap_tick_t to = COAP_PDU_IS_REQUEST(&lg_xmit->pdu) ? partial_timeout : serve_timeout;
+      if (lg_xmit->last_sent + to <= now) {
         /* Expire this entry */
         LL_DELETE(session->lg_xmit, lg_xmit);
         coap_block_delete_lg_xmit(session, lg_xmit);
         coap_handle_event_lkd(session->context, COAP_EVENT_XMIT_BLOCK_FAIL, session);
       } else {
         /* Delay until the lg_xmit needs to expire */
-        if (*tim_rem > lg_xmit->last_sent + partial_timeout - now) {
-          *tim_rem = lg_xmit->last_sent + partial_timeout - now;
+        if (*tim_rem > lg_xmit->last_sent + to - now) {
+          *tim_rem = lg_xmit->last_sent + to - now;
           ret = 1;
         }
       }
