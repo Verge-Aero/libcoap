@@ -1515,6 +1515,15 @@ coap_send_lkd(coap_session_t *session, coap_pdu_t *pdu) {
    * Confirmable GET, which RFC 7252 8.1 forbids to a multicast destination, and Q-Block negotiation
    * is meaningless for multicast (it has no single peer to confirm support) — such a session just
    * sends NON and falls back to plain block-wise. */
+  {
+  const char *nx_no_probe = getenv("NX_TEST_NO_Q_PROBE");
+  if (nx_no_probe && *nx_no_probe && session->type == COAP_SESSION_TYPE_CLIENT) {
+    /* Test-only: simulate a peer where Q-Block negotiation never establishes (e.g. the one-shot CON
+     * probe to /.well-known/core was lost over a lossy radio). set_block_mode_drop_q once so HAS_Q_BLOCK
+     * stays unset — exercising the downgrade path that the per-request fix below must override. */
+    if (session->block_mode & (COAP_BLOCK_TRY_Q_BLOCK | COAP_BLOCK_PROBE_Q_BLOCK))
+      set_block_mode_drop_q(session->block_mode);
+  } else
   if (session->block_mode & COAP_BLOCK_TRY_Q_BLOCK &&
       session->type == COAP_SESSION_TYPE_CLIENT &&
       !coap_is_mcast(&session->addr_info.remote) &&
@@ -1529,9 +1538,28 @@ coap_send_lkd(coap_session_t *session, coap_pdu_t *pdu) {
       goto error;
     }
   }
+  }
 #endif /* COAP_Q_BLOCK_SUPPORT */
 
 #if COAP_Q_BLOCK_SUPPORT
+  /* Verge fork: treat a Q-Block2 option the app explicitly put on a client request as a
+   * per-request opt-in, and honor it — symmetric to the server serving Q-Block2 per-request
+   * (see coap_block.c, "RFC 9177 treats Q-Block2 as a per-request option"). Stock libcoap
+   * downgrades it to plain Block2 below unless the session-level .well-known probe latched
+   * COAP_BLOCK_HAS_Q_BLOCK; but that probe permanently DROPs Q-Block against any peer whose
+   * /.well-known/core answers plain Block2 (set_block_mode_drop_q), after which every later
+   * Q-Block2 GET silently degrades to one-block-per-round-trip pull. If the app added the
+   * option, it meant it: latch HAS_Q_BLOCK so the option survives onto the wire (and the
+   * receive path builds a Q-Block2 lg_crcv). The negotiation still self-heals normally —
+   * a Q-Block2 response sets HAS_Q_BLOCK anyway; this just stops the probe from vetoing an
+   * explicit request. Q-Block1 (upload) is unaffected. */
+  if (session->type == COAP_SESSION_TYPE_CLIENT &&
+      COAP_PDU_IS_REQUEST(pdu) &&
+      !(session->block_mode & COAP_BLOCK_HAS_Q_BLOCK) &&
+      coap_get_block_b(session, pdu, COAP_OPTION_Q_BLOCK2, &block)) {
+    set_block_mode_has_q(session->block_mode);
+  }
+
   if (!(session->block_mode & COAP_BLOCK_HAS_Q_BLOCK))
 #endif /* COAP_Q_BLOCK_SUPPORT */
   {
