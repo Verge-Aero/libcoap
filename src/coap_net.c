@@ -1551,12 +1551,14 @@ coap_send_lkd(coap_session_t *session, coap_pdu_t *pdu) {
    * Q-Block2 GET silently degrades to one-block-per-round-trip pull. If the app added the
    * option, it meant it: latch HAS_Q_BLOCK so the option survives onto the wire (and the
    * receive path builds a Q-Block2 lg_crcv). The negotiation still self-heals normally —
-   * a Q-Block2 response sets HAS_Q_BLOCK anyway; this just stops the probe from vetoing an
-   * explicit request. Q-Block1 (upload) is unaffected. */
+   * a Q-Block response sets HAS_Q_BLOCK anyway; this just stops the probe from vetoing an
+   * explicit request. Covers BOTH Q-Block2 (windowed download GET) and Q-Block1 (windowed-push
+   * upload PUT) so burst uploads are equally robust to a lost/failed probe on a lossy link. */
   if (session->type == COAP_SESSION_TYPE_CLIENT &&
       COAP_PDU_IS_REQUEST(pdu) &&
       !(session->block_mode & COAP_BLOCK_HAS_Q_BLOCK) &&
-      coap_get_block_b(session, pdu, COAP_OPTION_Q_BLOCK2, &block)) {
+      (coap_get_block_b(session, pdu, COAP_OPTION_Q_BLOCK2, &block) ||
+       coap_get_block_b(session, pdu, COAP_OPTION_Q_BLOCK1, &block))) {
     set_block_mode_has_q(session->block_mode);
   }
 
