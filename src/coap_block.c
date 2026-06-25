@@ -759,6 +759,18 @@ coap_add_data_large_internal(coap_session_t *session,
     if (session->block_mode & (COAP_BLOCK_HAS_Q_BLOCK|COAP_BLOCK_TRY_Q_BLOCK)) {
       option = COAP_OPTION_Q_BLOCK1;
       alt_option = COAP_OPTION_BLOCK1;
+    } else if (coap_get_block_b(session, pdu, COAP_OPTION_Q_BLOCK1, &block)) {
+      /* The app explicitly added a Q-Block1 option to this request. Honor it per-request even
+       * though the session never latched (or DROPped, via set_block_mode_drop_q after a lost
+       * .well-known probe) HAS_Q_BLOCK / TRY_Q_BLOCK. This mirrors the GET-side per-request honor
+       * in coap_send_lkd, but a PUT *body* must be honored HERE: coap_add_data_large builds the
+       * lg_xmit now and would otherwise pick plain Block1 and strip the option before the PDU ever
+       * reaches coap_send. Latch HAS_Q_BLOCK so the ack/recovery path treats the body as Q-Block1.
+       * Without this a windowed-push upload silently degrades to plain Block1 stop-and-wait (one
+       * 2.31 per block, no burst) on any lossy link where the negotiation probe was lost. */
+      set_block_mode_has_q(session->block_mode);
+      option = COAP_OPTION_Q_BLOCK1;
+      alt_option = COAP_OPTION_BLOCK1;
     } else {
       option = COAP_OPTION_BLOCK1;
       alt_option = COAP_OPTION_Q_BLOCK1;
