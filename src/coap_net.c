@@ -858,12 +858,13 @@ coap_option_check_critical(coap_session_t *session,
 #if COAP_Q_BLOCK_SUPPORT
       case COAP_OPTION_Q_BLOCK1:
       case COAP_OPTION_Q_BLOCK2:
-        if (!(ctx->block_mode & COAP_BLOCK_TRY_Q_BLOCK)) {
-          coap_log_debug("disabled support for critical option %u\n",
-                         opt_iter.number);
-          ok = 0;
-          coap_option_filter_set(unknown, opt_iter.number);
-        }
+        /* A Q-Block-capable build always RECOGNISES the option, so an inbound Q-Block
+           request is never RST as an "unknown critical option" merely because this node's
+           CLIENT-side TRY_Q_BLOCK preference is currently off. That preference is toggled
+           per client transfer (a plain GET clears it); coupling inbound SERVING to it made
+           a node RST a peer's Q-Block upload GET right after it had done a plain/qblock=off
+           pull on the same session. Whether to actually honor the option is decided
+           per-request in the block handler — recognising it here only avoids the spurious RST. */
         break;
 #endif /* COAP_Q_BLOCK_SUPPORT */
       case COAP_OPTION_IF_MATCH:
