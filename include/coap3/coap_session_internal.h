@@ -223,6 +223,12 @@ struct coap_session_t {
                                        of the last CON */
 #if COAP_SERVER_SUPPORT
   coap_bin_const_t *client_cid;     /**< Contains client CID or NULL */
+  /* verge: a request handler sets this to HOLD the response — handle_request then sends NOTHING (no
+     piggyback, no empty ACK) and records the mid for dup-suppression, so the application can emit the ACK
+     itself later: a piggybacked ACK if it completes within its hold window, else a later empty-ACK +
+     separate response. One request is in handle_request at a time (single poll thread), so a per-session
+     flag set+cleared within that scope is sufficient. */
+  uint8_t hold_response;
 #endif /* COAP_SERVER_SUPPORT */
 };
 

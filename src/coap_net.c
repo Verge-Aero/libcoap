@@ -3535,6 +3535,18 @@ handle_request(coap_context_t *context, coap_session_t *session, coap_pdu_t *pdu
     }
   }
 
+#if COAP_SERVER_SUPPORT
+  /* verge held-ACK: the handler asked to HOLD this response — the application will emit the ACK itself
+     (a piggybacked ACK if it completes within its hold window, else a later empty-ACK + separate
+     response). Send nothing now; record the mid so a retransmit during the hold window is suppressed as a
+     duplicate (one request is in handle_request at a time on the single poll thread). */
+  if (session->hold_response) {
+    session->hold_response = 0;
+    session->last_con_mid = pdu->mid;
+    goto drop_it_no_debug;   /* deletes `response`, sends nothing */
+  }
+#endif /* COAP_SERVER_SUPPORT */
+
   /* Check validity of response code */
   if (!coap_check_code_class(session, response)) {
     coap_log_warn("handle_request: Invalid PDU response code (%d.%02d)\n",
