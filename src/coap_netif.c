@@ -132,7 +132,17 @@ coap_netif_dgrm_write(coap_session_t *session, const uint8_t *data,
   coap_socket_t *sock = &session->sock;
 #if COAP_SERVER_SUPPORT
   if (sock->flags == COAP_SOCKET_EMPTY) {
-    assert(session->endpoint != NULL);
+    /* A zeroed sock (flags == EMPTY) on a CLIENT session means the session is being torn down. The
+     * server path below follows session->endpoint->sock, but a client session has no endpoint, so the
+     * stock `assert(endpoint != NULL)` + deref of &((coap_endpoint_t*)0)->sock is a NULL deref (offset
+     * 0x10) -> hard fault. This is reachable in practice: tearing down a client OSCORE session (e.g. a
+     * runtime demote) can leave a small control frame briefly queued in the OSCORE layer that is then
+     * flushed onto the now-dead session. Dropping that send is correct — there is nowhere valid to send
+     * it — so guard the client case instead of faulting. (The server case keeps its endpoint invariant.) */
+    if (session->endpoint == NULL) {
+      coap_log_debug("coap_netif_dgrm_write: send on a closing client session — dropped %zu B\n", datalen);
+      return -1;
+    }
     sock = &session->endpoint->sock;
   }
 #endif /* COAP_SERVER_SUPPORT */
