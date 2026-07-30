@@ -78,6 +78,13 @@
 #define COAP_DEFAULT_MAX_PDU_RX_SIZE (COAP_MAX_MESSAGE_SIZE_TCP16+4UL)
 #elif defined(WITH_CONTIKI)
 #define COAP_DEFAULT_MAX_PDU_RX_SIZE (sizeof(coap_packet_t) + UIP_APPDATA_SIZE)
+#elif defined(__NuttX__)
+/* (verge) NuttX is a constrained 32-bit RTOS: the generic 8 MiB desktop default below is disastrous
+ * here because OSCORE_CRYPTO_BUFFER_SIZE (= this + 16) is malloc()'d per OSCORE encrypt/decrypt, and an
+ * ~8 MiB request fails on a device with ~240 KB of RAM. The upstream constrained guard only catches
+ * 16-bit targets (UINT_MAX < 8 MiB), which a 32-bit MCU is not. 2 KiB covers a Block2-reassembled
+ * EDHOC/OSCORE body (< 1.5 KiB) with headroom. Overridable via -D if a build genuinely needs more. */
+#define COAP_DEFAULT_MAX_PDU_RX_SIZE (2048UL)
 #elif (UINT_MAX < (8UL*1024*1024+256))
 #define COAP_DEFAULT_MAX_PDU_RX_SIZE (1500UL)
 #elif defined(RIOT_VERSION) && defined(COAP_DISABLE_TCP)
