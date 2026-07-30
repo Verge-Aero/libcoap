@@ -101,17 +101,21 @@ oscore_bytes_equal(uint8_t *a_ptr,
 
 static void
 oscore_enter_context(coap_context_t *c_context, oscore_ctx_t *osc_ctx) {
-  if (c_context->p_osc_ctx) {
-    oscore_ctx_t *prev = c_context->p_osc_ctx;
-    oscore_ctx_t *next = c_context->p_osc_ctx->next;
-
-    while (next) {
-      prev = next;
-      next = next->next;
-    }
-    prev->next = osc_ctx;
-  } else
-    c_context->p_osc_ctx = osc_ctx;
+  /* PREPEND, not append: the new context becomes the head of p_osc_ctx.
+   *
+   * Every other operation on the context chain is head-relative and so implicitly assumes the head is
+   * the MOST-RECENTLY-installed context:
+   *   - coap_new_oscore_recipient() / coap_delete_oscore_recipient() act on context->p_osc_ctx (the
+   *     head) alone, so a recipient id added right after install must land on the context just added;
+   *   - oscore_find_context() walks from the head and returns the FIRST context whose recipient chain
+   *     carries the requested key id, so with duplicate ids the head must win.
+   * Appending to the tail broke all three: after a device re-ran EDHOC (a fresh master secret with the
+   * SAME recipient id / C_R), the new context went to the tail while its recipient id was added to the
+   * OLD head context; find_context then resolved inbound requests against the OLD context's keys and
+   * every decrypt failed (-5). Prepending makes head == newest, so add-recipient, find, and delete all
+   * agree on the current context. (Upstream libcoap appends here; this is a local correctness fix.) */
+  osc_ctx->next = c_context->p_osc_ctx;
+  c_context->p_osc_ctx = osc_ctx;
 }
 
 static void
