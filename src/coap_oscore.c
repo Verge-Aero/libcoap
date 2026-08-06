@@ -308,6 +308,91 @@ coap_oscore_new_pdu_encrypted(coap_session_t *session,
 }
 
 /*
+ * A server OSCORE association carries the request's AAD/partial-IV so the
+ * matching RESPONSE can be encrypted. It is normally consumed (deleted) after
+ * that one response. But a Block2 / Q-Block2 body sends MANY response PDUs for
+ * a single request (all echoing the request token) — the same one-request /
+ * many-responses shape as Observe. Deleting the association after the first
+ * block leaves every later block unable to find it ("PDU could not be
+ * encrypted"). Observe is already exempted (association->is_observe); this
+ * detects the block-body case so it is exempted too: keep the association
+ * while a response-body large-transmit for this token is still in flight.
+ */
+static int
+oscore_response_body_in_flight(const coap_session_t *session,
+                               const coap_bin_const_t *token) {
+#if COAP_SERVER_SUPPORT
+  const coap_lg_xmit_t *lg_xmit;
+
+  LL_FOREACH(session->lg_xmit, lg_xmit) {
+    /* Response bodies carry Block2/Q-Block2; requests carry Block1. */
+    if (lg_xmit->option != COAP_OPTION_BLOCK2 &&
+        lg_xmit->option != COAP_OPTION_Q_BLOCK2)
+      continue;
+    if (lg_xmit->pdu.actual_token.length == token->length &&
+        memcmp(lg_xmit->pdu.actual_token.s, token->s, token->length) == 0)
+      return 1;
+  }
+#else  /* ! COAP_SERVER_SUPPORT */
+  (void)session;
+  (void)token;
+#endif /* ! COAP_SERVER_SUPPORT */
+  return 0;
+}
+
+/*
+ * The client mirror of the above. A client OSCORE association carries the state
+ * needed to DECRYPT the response to a request. It is normally consumed after
+ * that one response — but a Block2 / Q-Block2 response BODY arrives as MANY PDUs
+ * for a single request, and each must be decrypted against the same association.
+ * Deleting it after the first block makes every later block fail ("Security
+ * Context association not found"). Keep the association while a client
+ * large-receive (lg_crcv) for this token is still assembling. The per-block
+ * response tokens are STATE_TOKEN_FULL(state_token, count), so match the token's
+ * state-token BASE against each lg_crcv (or its app_token) — the same test the
+ * block-reassembly code uses.
+ */
+static int
+oscore_receive_body_in_flight(const coap_session_t *session,
+                              const coap_bin_const_t *token,
+                              const coap_pdu_t *decrypted) {
+#if COAP_CLIENT_SUPPORT
+  const coap_lg_crcv_t *lg_crcv;
+  uint64_t token_match =
+      STATE_TOKEN_BASE(coap_decode_var_bytes8(token->s, token->length));
+  coap_block_b_t block;
+
+  /* First, and most importantly, look at the just-decrypted PDU itself: if it is
+   * a Block2 / Q-Block2 response that is NOT the whole body (more-bit set, or a
+   * non-zero block number), further blocks share this association. This works
+   * even for the FIRST block, before the lg_crcv that tracks the body has been
+   * created (it is built downstream in coap_handle_response, after this decrypt). */
+  if (decrypted &&
+      (coap_get_block_b(session, decrypted, COAP_OPTION_BLOCK2, &block) ||
+       coap_get_block_b(session, decrypted, COAP_OPTION_Q_BLOCK2, &block))) {
+    if (block.m || block.num > 0)
+      return 1;
+  }
+
+  /* Also keep it while an established multi-block receive (lg_crcv) is assembling
+   * for this token — covers later blocks and the retransmit/recovery paths. */
+  LL_FOREACH(session->lg_crcv, lg_crcv) {
+    if (token_match == STATE_TOKEN_BASE(lg_crcv->state_token))
+      return 1;
+    if (lg_crcv->app_token &&
+        lg_crcv->app_token->length == token->length &&
+        memcmp(lg_crcv->app_token->s, token->s, token->length) == 0)
+      return 1;
+  }
+#else  /* ! COAP_CLIENT_SUPPORT */
+  (void)session;
+  (void)token;
+  (void)decrypted;
+#endif /* ! COAP_CLIENT_SUPPORT */
+  return 0;
+}
+
+/*
  * Take current PDU, create a new one approriately separated as per RFC8613
  * and then encrypt / integrity check the OSCORE data
  */
@@ -663,7 +748,8 @@ coap_oscore_new_pdu_encrypted_lkd(coap_session_t *session,
   coap_delete_pdu_lkd(plain_pdu);
   plain_pdu = NULL;
 
-  if (association && association->is_observe == 0)
+  if (association && association->is_observe == 0 &&
+      !oscore_response_body_in_flight(session, &pdu_token))
     oscore_delete_association(session, association);
   association = NULL;
 
@@ -1653,14 +1739,16 @@ coap_oscore_decrypt_pdu(coap_session_t *session,
     }
   }
 #endif /* COAP_CLIENT_SUPPORT */
-  if (association && association->is_observe == 0)
+  if (association && association->is_observe == 0 &&
+      !oscore_receive_body_in_flight(session, &pdu_token, decrypt_pdu))
     oscore_delete_association(session, association);
   return decrypt_pdu;
 
 error:
   coap_send_ack_lkd(session, pdu);
 error_no_ack:
-  if (association && association->is_observe == 0)
+  if (association && association->is_observe == 0 &&
+      !oscore_receive_body_in_flight(session, &pdu_token, decrypt_pdu))
     oscore_delete_association(session, association);
   coap_delete_pdu_lkd(decrypt_pdu);
   coap_delete_pdu_lkd(plain_pdu);
@@ -2100,6 +2188,20 @@ coap_delete_all_oscore(coap_context_t *c_context) {
 void
 coap_delete_oscore_associations(coap_session_t *session) {
   oscore_delete_server_associations(session);
+}
+
+int
+coap_delete_oscore_association_by_token(coap_session_t *session,
+                                        coap_bin_const_t *token) {
+  oscore_association_t *association;
+
+  if (session == NULL || token == NULL)
+    return 0;
+  association = oscore_find_association(session, token);
+  if (association == NULL)
+    return 0;
+  oscore_delete_association(session, association);
+  return 1;
 }
 
 coap_oscore_conf_t *

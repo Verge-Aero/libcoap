@@ -135,6 +135,23 @@ void coap_delete_all_oscore(coap_context_t *context);
 void coap_delete_oscore_associations(coap_session_t *session);
 
 /**
+ * Cleanup the single OSCORE association matching @p token, if present.
+ *
+ * Unlike coap_delete_oscore_associations() (which drops every association on
+ * the session), this removes only the one keyed by @p token. Use it to reclaim
+ * the association a failed request stranded, without disturbing the other
+ * in-flight associations on the same session (e.g. concurrent block-wise
+ * responses).
+ *
+ * @param session The session the association belongs to.
+ * @param token   The token of the request whose association is to be dropped.
+ *
+ * @return @c 1 if an association was found and deleted, else @c 0.
+ */
+int coap_delete_oscore_association_by_token(coap_session_t *session,
+                                            coap_bin_const_t *token);
+
+/**
  * Determine the additional data size requirements for adding in OSCORE.
  *
  * @param session The session that the OSCORE associations are associated with.
