@@ -154,6 +154,23 @@ typedef struct coap_ssl_t {
 } coap_ssl_t;
 
 /*
+ * COAP_MBEDTLS_CRYPTO_ONLY (libcoap carry-patch, not upstream):
+ *
+ * OSCORE (RFC 8613) is object security at the CoAP layer and needs NOTHING from a (D)TLS session —
+ * only this file's AEAD/HKDF/HMAC/SHA primitives, which live above in the "Crypto Abstraction
+ * Functions" section. But those primitives and the whole (D)TLS session backend share one
+ * translation unit, so a build that wants OSCORE has to link mbedtls's entire SSL/TLS engine
+ * (~46 KB on our target) for code paths it can never reach.
+ *
+ * With COAP_MBEDTLS_CRYPTO_ONLY defined, this file compiles ONLY the crypto abstraction and the
+ * (D)TLS backend entry points come from coap_notls.c's stubs instead (whose own OSCORE block is
+ * excluded so the real crypto here wins). Purely additive: undefined, the file is unchanged.
+ *
+ * Everything from here to the crypto section, and everything after it, is (D)TLS-session-only.
+ */
+#ifndef COAP_MBEDTLS_CRYPTO_ONLY
+
+/*
  * This structure encapsulates the Mbed TLS session object.
  * It handles both TLS and DTLS.
  * c_session->tls points to this.
@@ -262,9 +279,12 @@ zephyr_timing_get_delay(void *data) {
 
 #endif /* __ZEPHYR__ */
 
+#endif /* !COAP_MBEDTLS_CRYPTO_ONLY */
+
 /*
  * Crypto Abstraction Functions
  * These provide a unified API for both legacy mbedTLS and PSA Crypto.
+ * KEPT under COAP_MBEDTLS_CRYPTO_ONLY: this is what OSCORE needs.
  */
 
 #if COAP_SERVER_SUPPORT
@@ -606,6 +626,10 @@ cleanup:
 #endif /* COAP_OSCORE_SUPPORT */
 
 /* End of Crypto Abstraction Functions */
+
+/* Everything below is the (D)TLS session backend — see COAP_MBEDTLS_CRYPTO_ONLY above. When that is
+ * defined these entry points come from coap_notls.c instead, and nothing here is compiled. */
+#ifndef COAP_MBEDTLS_CRYPTO_ONLY
 
 #if !COAP_USE_PSA_CRYPTO
 #ifndef MBEDTLS_2_X_COMPAT
@@ -3423,6 +3447,10 @@ coap_crypto_hash(cose_alg_t alg,
 }
 #endif /* COAP_WS_SUPPORT */
 
+#endif /* !COAP_MBEDTLS_CRYPTO_ONLY — end of the (D)TLS session backend */
+
+/* The OSCORE surface below is KEPT under COAP_MBEDTLS_CRYPTO_ONLY: these are the real AEAD/HKDF/HMAC
+ * entry points libcoap's OSCORE layer calls, and they are exactly what coap_notls.c stubs out. */
 #if COAP_OSCORE_SUPPORT
 int
 coap_oscore_is_supported(void) {

@@ -30,7 +30,13 @@ coap_tls_engine_remove(void) {
 }
 #endif /* ! COAP_WITH_LIBOPENSSL */
 
-#if !defined(COAP_WITH_LIBTINYDTLS) && !defined(COAP_WITH_LIBOPENSSL) && !defined(COAP_WITH_LIBWOLFSSL) && !defined(COAP_WITH_LIBGNUTLS) && !defined(COAP_WITH_LIBMBEDTLS)
+/* COAP_MBEDTLS_CRYPTO_ONLY (libcoap carry-patch, not upstream): coap_mbedtls.c is compiled for its
+ * OSCORE crypto primitives ONLY, with its whole (D)TLS session backend excluded (see the comment
+ * there). The (D)TLS entry points libcoap's core calls unconditionally must still exist, so this
+ * file's no-op backend supplies them — while its own OSCORE block below stays excluded, so the REAL
+ * crypto in coap_mbedtls.c is what links. */
+#if (!defined(COAP_WITH_LIBTINYDTLS) && !defined(COAP_WITH_LIBOPENSSL) && !defined(COAP_WITH_LIBWOLFSSL) && !defined(COAP_WITH_LIBGNUTLS) && !defined(COAP_WITH_LIBMBEDTLS)) || \
+    defined(COAP_MBEDTLS_CRYPTO_ONLY)
 
 int
 coap_dtls_is_supported(void) {
@@ -374,7 +380,10 @@ coap_crypto_hash(cose_alg_t alg,
 }
 #endif /* COAP_WS_SUPPORT */
 
-#if COAP_OSCORE_SUPPORT
+/* Under COAP_MBEDTLS_CRYPTO_ONLY the real implementations of everything below come from
+ * coap_mbedtls.c; compiling these no-op versions too would be a duplicate-symbol link error (and if
+ * they won, OSCORE would silently fail to encrypt). */
+#if COAP_OSCORE_SUPPORT && !defined(COAP_MBEDTLS_CRYPTO_ONLY)
 
 int
 coap_oscore_is_supported(void) {
