@@ -15,6 +15,14 @@
 
 #include "coap3/coap_libcoap_build.h"
 
+/* (verge) Size of the fixed-block coap_pdu_t pool; 0 disables it (pure malloc, upstream
+ * behaviour). Defined here, above every backend, so the guards that decide whether to
+ * compile the pool and whether to emit the coap_pool_stats() stub all see one value.
+ */
+#ifndef COAP_POOL_PDUS
+#define COAP_POOL_PDUS 0
+#endif
+
 #ifndef WITH_LWIP
 #if COAP_MEMORY_TYPE_TRACK
 static int track_counts[COAP_MEM_TAG_LAST];
@@ -549,14 +557,150 @@ coap_free_type(coap_memory_tag_t type, void *p) {
 
 #elif defined(HAVE_MALLOC) || defined(__MINGW32__)
 #include <stdlib.h>
+#include <string.h>   /* memcpy, for the pool realloc guard */
+
+/* (verge) Optional fixed-block pool for the per-message allocations, on top of the
+ * generic malloc backend.
+ *
+ * Every CoAP message costs a coap_pdu_t plus its data buffer, and on a busy node that is
+ * the dominant allocator load: measured on x1pro-mc, 58% of nixie_node's allocations
+ * (64537 of 111872) were exactly this pair, at ~40 pairs/second sustained. Each one is
+ * malloc/free churn in the RX path, with the fragmentation and non-determinism that
+ * implies on a device whose live heap is ~215 KB.
+ *
+ * libcoap already tags every allocation with its coap_memory_tag_t, so a pool is a pure
+ * backend swap -- no call-site changes. This is the same design RIOT uses (see the
+ * MODULE_MEMARRAY branch above); it is implemented here because that branch depends on
+ * RIOT's memarray module.
+ *
+ * Only COAP_PDU is pooled. It is the clean half: every allocation is exactly
+ * sizeof(coap_pdu_t) (three call sites, all in coap_pdu.c), it is never realloc'd, and a
+ * fixed block therefore wastes nothing. COAP_PDU_BUF is deliberately NOT pooled here --
+ * its size is a runtime negotiation and RIOT's worst-case sizing (COAP_MAX_PDUS *
+ * COAP_DEFAULT_MAX_PDU_RX_SIZE) would reserve 8 KB to serve the 264-byte buffers that are
+ * 99.97% of real traffic.
+ *
+ * Exhaustion falls back to malloc rather than failing: a pool that turns a transient burst
+ * into a dropped message would be worse than the churn it removes. The fallback is
+ * counted so the trade stays visible (coap_pool_stats()).
+ */
+
+#if COAP_POOL_PDUS > 0
+#include "coap3/coap_pdu.h"
+
+/* Blocks are the free list when unused: a released block holds the next pointer, so the
+ * pool needs no side table and alloc/free are O(1) pointer swaps.
+ */
+typedef union coap_pool_block_t {
+  union coap_pool_block_t *next;
+  /* Sized and aligned for the largest pooled object. */
+  struct {
+    coap_pdu_t pdu;
+  } obj;
+} coap_pool_block_t;
+
+static coap_pool_block_t pdu_pool_data[COAP_POOL_PDUS];
+static coap_pool_block_t *pdu_pool_free;
+static unsigned pdu_pool_inuse;
+static unsigned pdu_pool_peak;
+static unsigned pdu_pool_overflow;   /* times we fell back to malloc */
+
+static void
+pdu_pool_init(void) {
+  size_t i;
+
+  pdu_pool_free = NULL;
+  for (i = 0; i < COAP_POOL_PDUS; i++) {
+    pdu_pool_data[i].next = pdu_pool_free;
+    pdu_pool_free = &pdu_pool_data[i];
+  }
+  pdu_pool_inuse = 0;
+  pdu_pool_peak = 0;
+  pdu_pool_overflow = 0;
+}
+
+/* True if p came from the pool. A range check, so a malloc'd fallback block is freed
+ * with free() and a pooled one is returned to the list.
+ */
+static int
+pdu_pool_owns(const void *p) {
+  return (const coap_pool_block_t *)p >= pdu_pool_data &&
+         (const coap_pool_block_t *)p < pdu_pool_data + COAP_POOL_PDUS;
+}
+
+static void *
+pdu_pool_alloc(size_t size) {
+  coap_pool_block_t *b;
+
+  /* A block must be able to hold what was asked for. sizeof(coap_pdu_t) is the only
+   * size COAP_PDU is ever allocated at, but check rather than assume: a future field
+   * addition must fall back, not corrupt the next block.
+   */
+  if (size > sizeof(((coap_pool_block_t *)0)->obj) || pdu_pool_free == NULL) {
+    pdu_pool_overflow++;
+    return NULL;
+  }
+
+  b = pdu_pool_free;
+  pdu_pool_free = b->next;
+  if (++pdu_pool_inuse > pdu_pool_peak) {
+    pdu_pool_peak = pdu_pool_inuse;
+  }
+  return b;
+}
+
+static void
+pdu_pool_free_block(void *p) {
+  coap_pool_block_t *b = (coap_pool_block_t *)p;
+
+  b->next = pdu_pool_free;
+  pdu_pool_free = b;
+  pdu_pool_inuse--;
+}
+
+void
+coap_pool_stats(unsigned *inuse, unsigned *peak, unsigned *capacity,
+                unsigned *overflow) {
+  if (inuse) {
+    *inuse = pdu_pool_inuse;
+  }
+  if (peak) {
+    *peak = pdu_pool_peak;
+  }
+  if (capacity) {
+    *capacity = COAP_POOL_PDUS;
+  }
+  if (overflow) {
+    *overflow = pdu_pool_overflow;
+  }
+}
+#endif /* COAP_POOL_PDUS > 0 */
 
 void
 coap_memory_init(void) {
+#if COAP_POOL_PDUS > 0
+  pdu_pool_init();
+#endif
 }
 
 void *
 coap_malloc_type(coap_memory_tag_t type, size_t size) {
   void *ptr;
+
+#if COAP_POOL_PDUS > 0
+  if (type == COAP_PDU) {
+    ptr = pdu_pool_alloc(size);
+    if (ptr != NULL) {
+#if COAP_MEMORY_TYPE_TRACK
+      track_counts[type]++;
+      if (track_counts[type] > peak_counts[type])
+        peak_counts[type] = track_counts[type];
+#endif /* COAP_MEMORY_TYPE_TRACK */
+      return ptr;
+    }
+    /* pool exhausted or block too small: fall through to malloc */
+  }
+#endif /* COAP_POOL_PDUS > 0 */
 
   (void)type;
   ptr = malloc(size);
@@ -577,6 +721,24 @@ void *
 coap_realloc_type(coap_memory_tag_t type, void *p, size_t size) {
   void *ptr;
 
+#if COAP_POOL_PDUS > 0
+  /* Defence in depth. COAP_PDU is never realloc'd today (only COAP_PDU_BUF is), but
+   * handing a pooled block to realloc() would corrupt the allocator's own structures --
+   * a failure that would surface far from here and be very hard to attribute. Copy out
+   * to a real allocation instead of trusting that invariant to hold forever.
+   */
+  if (p != NULL && pdu_pool_owns(p)) {
+    ptr = malloc(size);
+    if (ptr != NULL) {
+      size_t copy = sizeof(((coap_pool_block_t *)0)->obj);
+
+      memcpy(ptr, p, size < copy ? size : copy);
+      pdu_pool_free_block(p);
+    }
+    return ptr;
+  }
+#endif /* COAP_POOL_PDUS > 0 */
+
   (void)type;
   ptr = realloc(p, size);
 #if COAP_MEMORY_TYPE_TRACK
@@ -595,12 +757,23 @@ coap_realloc_type(coap_memory_tag_t type, void *p, size_t size) {
 
 void
 coap_free_type(coap_memory_tag_t type, void *p) {
-  (void)type;
 #if COAP_MEMORY_TYPE_TRACK
   assert(type < COAP_MEM_TAG_LAST);
   if (p)
     track_counts[type]--;
 #endif /* COAP_MEMORY_TYPE_TRACK */
+
+#if COAP_POOL_PDUS > 0
+  /* Route by ADDRESS, not by type: an allocation that overflowed the pool came from
+   * malloc and must go back to malloc, and a pooled block must never reach free().
+   */
+  if (p != NULL && pdu_pool_owns(p)) {
+    pdu_pool_free_block(p);
+    return;
+  }
+#endif /* COAP_POOL_PDUS > 0 */
+
+  (void)type;
   free(p);
 }
 
@@ -664,6 +837,31 @@ coap_free_type(coap_memory_tag_t type, void *ptr) {
 #endif /* ! RIOT_VERSION */
 
 #ifndef WITH_LWIP
+
+/* (verge) The pool is only implemented on the malloc backend, and only when
+ * COAP_POOL_PDUS > 0 -- but the symbol must exist unconditionally or any caller of
+ * coap_pool_stats() fails to link depending on the platform. capacity 0 is how a caller
+ * knows there is no pool, rather than having to guess from a link error.
+ */
+#if !(defined(HAVE_MALLOC) || defined(__MINGW32__)) || COAP_POOL_PDUS == 0
+void
+coap_pool_stats(unsigned *inuse, unsigned *peak, unsigned *capacity,
+                unsigned *overflow) {
+  if (inuse) {
+    *inuse = 0;
+  }
+  if (peak) {
+    *peak = 0;
+  }
+  if (capacity) {
+    *capacity = 0;
+  }
+  if (overflow) {
+    *overflow = 0;
+  }
+}
+#endif
+
 #define MAKE_CASE(n) case n: name = #n; break
 void
 coap_dump_memory_type_counts(coap_log_t level) {

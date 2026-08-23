@@ -118,6 +118,23 @@ void coap_free_type(coap_memory_tag_t type, void *p);
 void coap_dump_memory_type_counts(coap_log_t log_level);
 
 /**
+ * (verge) Fixed-block PDU pool statistics.
+ *
+ * The pool (COAP_POOL_PDUS, see coap_mem.c) removes the malloc/free churn of one
+ * allocation per CoAP message. Reporting it matters because the pool silently falls back
+ * to malloc when exhausted: without these counters a pool sized too small looks exactly
+ * like a pool that is working, and the churn it was meant to remove comes back invisibly.
+ *
+ * A non-zero @p overflow means the pool is undersized for this workload -- raise
+ * COAP_POOL_PDUS (or accept the fallback). @p peak is the sizing evidence.
+ *
+ * All parameters are optional (pass NULL to skip). With the pool disabled, capacity
+ * reads 0 and the rest are meaningless.
+ */
+void coap_pool_stats(unsigned *inuse, unsigned *peak, unsigned *capacity,
+                     unsigned *overflow);
+
+/**
  * Wrapper function to coap_malloc_type() for backwards compatibility.
  */
 COAP_STATIC_INLINE void *
