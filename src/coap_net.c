@@ -3363,6 +3363,12 @@ handle_request(coap_context_t *context, coap_session_t *session, coap_pdu_t *pdu
     h = resource->handler[pdu->code - 1];
 
   if (h == NULL) {
+    /* No handler for this method.  Report it before failing: over multicast
+     * this response is never sent (RFC 7252 8.1), so without this the request
+     * vanishes -- the exact shape of a command sent as PUT to a POST-only
+     * resource, which took a live debugger to find. */
+    if (context->refused_handler)
+      context->refused_handler(session, pdu, uri_path, 405);
     resp = 405;
     goto fail_response;
   }
@@ -3379,6 +3385,8 @@ handle_request(coap_context_t *context, coap_session_t *session, coap_pdu_t *pdu
   if (context->mcast_per_resource &&
       (resource->flags & COAP_RESOURCE_FLAGS_HAS_MCAST_SUPPORT) == 0 &&
       coap_is_mcast(&session->addr_info.local)) {
+    if (context->refused_handler)
+      context->refused_handler(session, pdu, uri_path, 405);
     resp = 405;
     goto fail_response;
   }
@@ -4576,6 +4584,17 @@ coap_cleanup(void) {
   coap_dtls_shutdown();
 
   coap_debug_reset();
+}
+
+void
+coap_register_refused_handler(coap_context_t *context,
+                              coap_refused_handler_t handler) {
+#if COAP_SERVER_SUPPORT
+  context->refused_handler = handler;
+#else /* ! COAP_SERVER_SUPPORT */
+  (void)context;
+  (void)handler;
+#endif /* COAP_SERVER_SUPPORT */
 }
 
 void

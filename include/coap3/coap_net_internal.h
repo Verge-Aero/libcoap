@@ -193,6 +193,14 @@ struct coap_context_t {
                                         resource */
   uint8_t mcast_per_resource;      /**< Mcast controlled on a per resource
                                         basis */
+  /**
+   * Called when a request is refused BEFORE any resource handler runs (no
+   * handler for the method, unsupported mcast, etc).  Such a refusal is
+   * invisible to the application: the handler never runs, and RFC 7252 8.1
+   * forbids sending the error response to a multicast request, so the request
+   * leaves no trace anywhere.  This hook lets an application record it.
+   */
+  coap_refused_handler_t refused_handler;
 #endif /* COAP_SERVER_SUPPORT */
 #if COAP_PROXY_SUPPORT
   coap_proxy_list_t *proxy_list;   /**< Set of active proxy sessions */

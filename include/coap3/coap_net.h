@@ -102,6 +102,35 @@ typedef void (*coap_pong_handler_t)(coap_session_t *session,
                                     const coap_mid_t mid);
 
 /**
+ * Refused-request handler that is used as callback in coap_context_t.
+ *
+ * Called when an inbound request is refused BEFORE any resource handler runs
+ * -- no handler registered for the method, or the resource does not support
+ * multicast.  Such a refusal is otherwise invisible to the application: no
+ * handler runs, and RFC 7252 8.1 forbids sending the error response to a
+ * multicast request, so the request leaves no trace at all.
+ *
+ * @param session CoAP session the request arrived on.
+ * @param received The request PDU that was refused.
+ * @param uri_path The request's URI path, or NULL if it could not be parsed.
+ * @param code The CoAP response code the request was refused with.
+ */
+typedef void (*coap_refused_handler_t)(coap_session_t *session,
+                                      const coap_pdu_t *received,
+                                      const coap_string_t *uri_path,
+                                      unsigned int code);
+
+/**
+ * Registers a handler called when a request is refused before dispatch (see
+ * coap_refused_handler_t).  Diagnostics only -- it cannot change the outcome.
+ *
+ * @param context The context to register the handler for.
+ * @param handler The refused handler to register, or NULL to clear it.
+ */
+void coap_register_refused_handler(coap_context_t *context,
+                                   coap_refused_handler_t handler);
+
+/**
  * Registers a new message handler that is called whenever a response is
  * received.
  *
