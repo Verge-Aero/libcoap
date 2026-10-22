@@ -2582,24 +2582,24 @@ coap_block_delete_lg_xmit(coap_session_t *session,
   if (lg_xmit->scratch) {
     coap_free_type(COAP_STRING, lg_xmit->scratch);
   }
+#if COAP_OSCORE_SUPPORT
+  /* A Block2/Q-Block2 response body keeps its OSCORE association alive across
+   * the whole multi-block burst (see coap_oscore.c oscore_response_body_in_flight):
+   * the association is NOT consumed per-block. Reclaim it now that the body is
+   * done, so it does not leak on a persistent server session. The token is read
+   * from the PDU buffer, so this must come before that buffer is freed below. */
+  if (!COAP_PDU_IS_REQUEST(&lg_xmit->pdu) && session->oscore_encryption) {
+    coap_bin_const_t tok = coap_pdu_get_token(&lg_xmit->pdu);
+    coap_delete_oscore_association_by_token(session, &tok);
+  }
+#endif /* COAP_OSCORE_SUPPORT */
   if (lg_xmit->pdu.token) {
     coap_free_type(COAP_PDU_BUF, lg_xmit->pdu.token - lg_xmit->pdu.max_hdr_size);
   }
   if (COAP_PDU_IS_REQUEST(&lg_xmit->pdu))
     coap_delete_binary(lg_xmit->b.b1.app_token);
-  else {
+  else
     coap_delete_string(lg_xmit->b.b2.query);
-#if COAP_OSCORE_SUPPORT
-    /* A Block2/Q-Block2 response body keeps its OSCORE association alive across
-     * the whole multi-block burst (see coap_oscore.c oscore_response_body_in_flight):
-     * the association is NOT consumed per-block. Reclaim it now that the body is
-     * done, so it does not leak on a persistent server session. */
-    if (session->oscore_encryption) {
-      coap_bin_const_t tok = coap_pdu_get_token(&lg_xmit->pdu);
-      coap_delete_oscore_association_by_token(session, &tok);
-    }
-#endif /* COAP_OSCORE_SUPPORT */
-  }
 
   coap_log_debug("** %s: lg_xmit %p released\n",
                  coap_session_str(session), (void *)lg_xmit);
