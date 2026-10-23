@@ -666,19 +666,26 @@ coap_session_max_pdu_size_lkd(const coap_session_t *session) {
   coap_lock_check_locked(session->context);
 #if COAP_CLIENT_SUPPORT
   /*
-   * Delay if session->doing_first is set.
-   * E.g. Reliable and CSM not in yet for checking block support
+   * On a reliable transport the maximum message size is only known once the
+   * CSM exchange is in, so wait for it while session->doing_first is set.
+   * Over UDP the size does not depend on that exchange, and doing_first is
+   * also set for other reasons (a fresh OSCORE context, the Extended Token
+   * probe). Waiting there runs a nested I/O loop from inside request handling
+   * (handle_request sizes its response through here); a second request
+   * arriving in that loop re-enters the wait, which is fatal.
    */
-  coap_session_t *session_rw;
+  if (COAP_PROTO_RELIABLE(session->proto)) {
+    coap_session_t *session_rw;
 
-  /*
-   * Need to do this to not get a compiler warning about const parameters
-   * but need to maintain source code backward compatibility
-   */
-  memcpy(&session_rw, &session, sizeof(session_rw));
-  if (coap_client_delay_first(session_rw) == 0) {
-    coap_log_debug("coap_client_delay_first: timeout\n");
-    /* Have to go with the defaults */
+    /*
+     * Need to do this to not get a compiler warning about const parameters
+     * but need to maintain source code backward compatibility
+     */
+    memcpy(&session_rw, &session, sizeof(session_rw));
+    if (coap_client_delay_first(session_rw) == 0) {
+      coap_log_debug("coap_client_delay_first: timeout\n");
+      /* Have to go with the defaults */
+    }
   }
 #endif /* COAP_CLIENT_SUPPORT */
 
