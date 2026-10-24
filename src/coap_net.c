@@ -1430,6 +1430,15 @@ coap_send_lkd(coap_session_t *session, coap_pdu_t *pdu) {
 
 #if COAP_OSCORE_SUPPORT
   if (session->oscore_encryption) {
+    /*
+     * A protected session whose security context has been removed (its peer
+     * re-keyed) can no longer protect a PDU, and must never send it in the
+     * clear instead.
+     */
+    if (session->recipient_ctx == NULL) {
+      coap_log_warn("coap_send: OSCORE session has no security context, PDU dropped\n");
+      goto error;
+    }
     if (session->recipient_ctx->initial_state == 1) {
       /*
        * Not sure if remote supports OSCORE, or is going to send us a
