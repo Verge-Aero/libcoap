@@ -1005,6 +1005,17 @@ coap_session_send_pdu(coap_session_t *session, coap_pdu_t *pdu) {
   bytes_written = session->sock.lfunc[COAP_LAYER_SESSION].l_write(session,
                   pdu->token - pdu->hdr_size,
                   pdu->used_size + pdu->hdr_size);
+#if COAP_OSCORE_SUPPORT && COAP_SERVER_SUPPORT
+  /* Keep the ACK for the last OSCORE request: its duplicates get it again */
+  if (bytes_written >= 0 && pdu->type == COAP_MESSAGE_ACK &&
+      session->oscore_rx_mid_valid && pdu->mid == session->oscore_rx_mid &&
+      !session->oscore_rx_ack && COAP_PROTO_NOT_RELIABLE(session->proto)) {
+    session->oscore_rx_ack = coap_new_binary(pdu->used_size + pdu->hdr_size);
+    if (session->oscore_rx_ack)
+      memcpy(session->oscore_rx_ack->s, pdu->token - pdu->hdr_size,
+             pdu->used_size + pdu->hdr_size);
+  }
+#endif /* COAP_OSCORE_SUPPORT && COAP_SERVER_SUPPORT */
   coap_show_pdu(COAP_LOG_DEBUG, pdu);
   return bytes_written;
 }
@@ -4044,6 +4055,22 @@ coap_dispatch(coap_context_t *context, coap_session_t *session,
     }
 #endif /* COAP_SERVER_SUPPORT */
     if (decrypt) {
+#if COAP_SERVER_SUPPORT
+      if (COAP_PDU_IS_REQUEST(pdu) && pdu->type == COAP_MESSAGE_CON &&
+          COAP_PROTO_NOT_RELIABLE(session->proto) &&
+          session->oscore_rx_mid_valid && pdu->mid == session->oscore_rx_mid) {
+        if (session->oscore_rx_ack) {
+          coap_log_debug("OSCORE: duplicate request mid=0x%04x - ACK resent\n",
+                         pdu->mid);
+          session->sock.lfunc[COAP_LAYER_SESSION].l_write(session,
+              session->oscore_rx_ack->s, session->oscore_rx_ack->length);
+        } else {
+          coap_log_debug("OSCORE: duplicate request mid=0x%04x - ACK not yet sent\n",
+                         pdu->mid);
+        }
+        goto cleanup;
+      }
+#endif /* COAP_SERVER_SUPPORT */
       /* find message id in sendqueue to stop retransmission and get sent */
       coap_remove_from_queue(&context->sendqueue, session, pdu->mid, &sent);
       /* Bump ref so pdu is not freed of, and keep a pointer to it */
@@ -4059,6 +4086,15 @@ coap_dispatch(coap_context_t *context, coap_session_t *session,
         return;
       } else {
         session->oscore_encryption = 1;
+#if COAP_SERVER_SUPPORT
+        if (COAP_PDU_IS_REQUEST(pdu) && pdu->type == COAP_MESSAGE_CON &&
+            COAP_PROTO_NOT_RELIABLE(session->proto)) {
+          session->oscore_rx_mid = pdu->mid;
+          session->oscore_rx_mid_valid = 1;
+          coap_delete_binary(session->oscore_rx_ack);
+          session->oscore_rx_ack = NULL;
+        }
+#endif /* COAP_SERVER_SUPPORT */
         pdu = dec_pdu;
       }
       coap_log_debug("Decrypted PDU\n");

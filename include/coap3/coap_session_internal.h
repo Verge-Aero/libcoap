@@ -229,6 +229,17 @@ struct coap_session_t {
      separate response. One request is in handle_request at a time (single poll thread), so a per-session
      flag set+cleared within that scope is sufficient. */
   uint8_t hold_response;
+#if COAP_OSCORE_SUPPORT
+  /* Message-layer deduplication of OSCORE requests (RFC 7252 4.5).  A
+     retransmitted CON request repeats its OSCORE Partial IV, so it is answered
+     before decryption, where the replay window would refuse it: with the ACK
+     sent for the original (piggybacked response or empty ACK), or not at all
+     while that ACK is still owed. */
+  uint8_t oscore_rx_mid_valid;    /**< oscore_rx_mid is set */
+  coap_mid_t oscore_rx_mid;       /**< MID of the last CON request that
+                                       passed OSCORE */
+  coap_binary_t *oscore_rx_ack;   /**< The encoded ACK sent for it, or NULL */
+#endif /* COAP_OSCORE_SUPPORT */
 #endif /* COAP_SERVER_SUPPORT */
 };
 

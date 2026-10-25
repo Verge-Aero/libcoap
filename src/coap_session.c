@@ -570,6 +570,11 @@ coap_session_mfree(coap_session_t *session) {
 #endif /* COAP_SERVER_SUPPORT */
 #if COAP_OSCORE_SUPPORT
   coap_delete_oscore_associations(session);
+#if COAP_SERVER_SUPPORT
+  coap_delete_binary(session->oscore_rx_ack);
+  session->oscore_rx_ack = NULL;
+  session->oscore_rx_mid_valid = 0;
+#endif /* COAP_SERVER_SUPPORT */
 #endif /* COAP_OSCORE_SUPPORT */
 #if COAP_WS_SUPPORT
   coap_free_type(COAP_STRING, session->ws);
