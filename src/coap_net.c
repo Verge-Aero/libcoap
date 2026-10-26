@@ -4081,6 +4081,23 @@ coap_dispatch(coap_context_t *context, coap_session_t *session,
             session->recipient_ctx->initial_state == 0) {
           coap_log_warn("OSCORE: PDU could not be decrypted\n");
         }
+        /* The exchange of the CON this answered is over: free its NSTART slot
+         * (else the session's later CONs wait in the delayqueue for good), end
+         * any wait for a first response, and tell the app it failed. */
+        if (sent && sent->pdu->type == COAP_MESSAGE_CON) {
+          session->doing_first = 0;
+          if (session->con_active) {
+            session->con_active--;
+            if (session->state == COAP_SESSION_STATE_ESTABLISHED)
+              coap_session_connected(session);
+          }
+          if (context->nack_handler) {
+            coap_check_update_token(session, sent->pdu);
+            coap_lock_callback(context,
+                               context->nack_handler(session, sent->pdu,
+                                                     COAP_NACK_BAD_RESPONSE, sent->id));
+          }
+        }
         coap_delete_node_lkd(sent);
         coap_delete_pdu_lkd(orig_pdu);
         return;
