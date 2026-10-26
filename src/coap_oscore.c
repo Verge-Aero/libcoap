@@ -900,6 +900,8 @@ coap_oscore_decrypt_pdu(coap_session_t *session,
   coap_bin_const_t nonce;
   int pltxt_size = 0;
   int got_resp_piv = 0;
+  uint8_t resp_piv_data[8];
+  coap_bin_const_t resp_piv = { 0, NULL };
   int doing_resp_observe = 0;
   uint8_t coap_request = COAP_PDU_IS_REQUEST(pdu);
   coap_bin_const_t pdu_token;
@@ -1144,6 +1146,15 @@ coap_oscore_decrypt_pdu(coap_session_t *session,
       goto error;
     }
     got_resp_piv = cose->partial_iv.length ? 1 : 0;
+    /* The response's own Partial IV, copied: the nonce and AAD steps below
+     * write the request's into the same COSE buffer, and a notification's
+     * Observe value is taken from this one.
+     */
+    if (cose->partial_iv.length && cose->partial_iv.length <= sizeof(resp_piv_data)) {
+      memcpy(resp_piv_data, cose->partial_iv.s, cose->partial_iv.length);
+      resp_piv.s = resp_piv_data;
+      resp_piv.length = cose->partial_iv.length;
+    }
 
     association = oscore_find_association(session, &pdu_token);
     if (association) {
@@ -1627,14 +1638,18 @@ coap_oscore_decrypt_pdu(coap_session_t *session,
       break;
     case COAP_OPTION_OBSERVE:
       if (!coap_request) {
-        bias = cose->partial_iv.length > 3 ? cose->partial_iv.length - 3 : 0;
-        len = cose->partial_iv.length > 3 ? 3 : cose->partial_iv.length;
-        /* Make Observe option reflect last 3 bytes of partial_iv */
+        /* Make Observe option reflect the last 3 bytes of the RESPONSE's
+         * Partial IV (RFC 8613 4.1.3.5.2), so each notification is newer
+         * than the last.  A response with none (the piggybacked reply to
+         * the registration) reads as 0, older than any notification.
+         */
+        bias = resp_piv.length > 3 ? resp_piv.length - 3 : 0;
+        len = resp_piv.length > 3 ? 3 : resp_piv.length;
         if (!coap_add_option_internal(
                 decrypt_pdu,
                 opt_iter.number,
                 len,
-                cose->partial_iv.s ? &cose->partial_iv.s[bias] : NULL)) {
+                resp_piv.s ? &resp_piv.s[bias] : NULL)) {
           coap_handle_event_lkd(session->context,
                                 COAP_EVENT_OSCORE_INTERNAL_ERROR,
                                 session);
