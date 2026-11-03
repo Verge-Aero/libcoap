@@ -1335,6 +1335,13 @@ static int
 coap_check_send_need_lg_crcv(coap_session_t *session, coap_pdu_t *pdu) {
   coap_opt_iterator_t opt_iter;
 
+  /* Only a request can receive a response body. In particular, OSCORE
+   * responses and Observe notifications must not allocate client receive
+   * state: nothing will complete it and repeated replies exhaust small heaps.
+   */
+  if (!COAP_PDU_IS_REQUEST(pdu))
+    return 0;
+
   if (
 #if COAP_OSCORE_SUPPORT
       session->oscore_encryption ||
