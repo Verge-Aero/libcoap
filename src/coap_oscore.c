@@ -449,6 +449,7 @@ coap_oscore_new_pdu_encrypted_lkd(coap_session_t *session,
                           pdu->used_size + coap_oscore_overhead(session, pdu));
   if (osc_pdu == NULL)
     return NULL;
+  osc_pdu->tclass = pdu->tclass;   /* the protected PDU is the one sent: it keeps its class (Verge QoS) */
 
   cose_encrypt0_init(cose); /* clears cose memory */
   pdu_token = coap_pdu_get_token(pdu);
@@ -1562,8 +1563,7 @@ coap_oscore_decrypt_pdu(coap_session_t *session,
     coap_cancel_all_messages(session->context,
                              session,
                              &pdu->actual_token);
-    if (session->con_active)
-      session->con_active--;
+    coap_session_con_done(session, sent_pdu);
     coap_send_ack_lkd(session, pdu);
     if (sent_pdu) {
       coap_log_oscore("Appendix B.2 retransmit pdu\n");
@@ -1721,8 +1721,7 @@ coap_oscore_decrypt_pdu(coap_session_t *session,
     coap_cancel_all_messages(session->context,
                              session,
                              &pdu->actual_token);
-    if (session->con_active)
-      session->con_active--;
+    coap_session_con_done(session, sent_pdu);
     if (sent_pdu) {
       coap_send_ack_lkd(session, pdu);
       coap_log_debug("PDU requesting re-transmit\n");

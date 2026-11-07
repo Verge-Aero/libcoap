@@ -1043,6 +1043,7 @@ coap_socket_set_tclass(coap_socket_t *sock, int family, uint8_t tclass) {
   int tc = tclass;
   if (!sock)
     return 0;
+  sock->tclass_set = 0;   /* unknown until a setsockopt below succeeds */
 #if defined(IPV6_TCLASS)
   if (family == AF_INET6) {
     if (setsockopt(sock->fd, IPPROTO_IPV6, IPV6_TCLASS, OPTVAL_T(&tc), sizeof(tc)) ==
@@ -1051,6 +1052,7 @@ coap_socket_set_tclass(coap_socket_t *sock, int family, uint8_t tclass) {
                     coap_socket_strerror());
       return 0;
     }
+    sock->tclass_set = tc + 1;
     return 1;
   }
 #endif /* IPV6_TCLASS */
@@ -1062,6 +1064,7 @@ coap_socket_set_tclass(coap_socket_t *sock, int family, uint8_t tclass) {
                     coap_socket_strerror());
       return 0;
     }
+    sock->tclass_set = tc + 1;
     return 1;
   }
 #endif /* IP_TOS */
@@ -1083,9 +1086,23 @@ qos_session_sock(coap_session_t *session) {
 
 void
 coap_session_set_tclass(coap_session_t *session, uint8_t tclass) {
-  if (session)
+  if (session) {
+    session->send_tclass = tclass;   /* stamped on each PDU sent from now on */
     coap_socket_set_tclass(qos_session_sock(session),
                            session->addr_info.remote.addr.sa.sa_family, tclass);
+  }
+}
+
+/* Put `pdu`'s own class on the socket before it is written: a PDU sent from the delayqueue or
+ * retransmitted goes out with its class, not whichever the socket was set to last. */
+void
+coap_session_apply_tclass(coap_session_t *session, const coap_pdu_t *pdu) {
+  coap_socket_t *sk;
+  if (!session || !pdu || pdu->tclass < 0)
+    return;
+  sk = qos_session_sock(session);
+  if (sk->tclass_set != pdu->tclass + 1)
+    coap_socket_set_tclass(sk, session->addr_info.remote.addr.sa.sa_family, (uint8_t)pdu->tclass);
 }
 
 void

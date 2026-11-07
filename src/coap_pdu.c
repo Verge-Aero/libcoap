@@ -153,6 +153,7 @@ coap_pdu_init(coap_pdu_type_t type, coap_pdu_code_t code, coap_mid_t mid,
   pdu->mid = mid;
   pdu->type = type;
   pdu->code = code;
+  pdu->tclass = -1;
   return pdu;
 }
 
@@ -255,6 +256,7 @@ coap_pdu_duplicate_lkd(const coap_pdu_t *old_pdu,
 
   coap_add_token(pdu, token_length, token);
   pdu->lg_xmit = old_pdu->lg_xmit;
+  pdu->tclass = old_pdu->tclass;   /* a copy (e.g. a block's next request) keeps its class */
 
   if (drop_options == NULL) {
     /* Drop COAP_PAYLOAD_START as well if data */

@@ -437,6 +437,7 @@ coap_make_session(coap_proto_t proto, coap_session_type_t type,
     coap_address_init(&session->addr_info.remote);
   session->ifindex = ifindex;
   session->recv_tclass = -1;      /* QoS (Verge): -1 until a datagram with the ancillary data arrives */
+  session->send_tclass = -1;      /* QoS (Verge): -1 until coap_session_set_tclass */
   session->recv_flowlabel = -1;
   session->context = context;
 #if COAP_SERVER_SUPPORT
@@ -812,6 +813,19 @@ coap_session_send_ping(coap_session_t *session) {
   return mid;
 }
 
+uint8_t *
+coap_session_con_lane(coap_session_t *session, const coap_pdu_t *pdu) {
+  int dscp = pdu && pdu->tclass >= 0 ? pdu->tclass >> 2 : -1;
+  return dscp == 46 || dscp == 48 || dscp == 56 ? &session->con_active_xp : &session->con_active;
+}
+
+void
+coap_session_con_done(coap_session_t *session, const coap_pdu_t *pdu) {
+  uint8_t *lane = coap_session_con_lane(session, pdu);
+  if (*lane)
+    (*lane)--;
+}
+
 coap_mid_t
 coap_session_send_ping_lkd(coap_session_t *session) {
   coap_pdu_t *ping = NULL;
@@ -857,16 +871,22 @@ coap_session_connected(coap_session_t *session) {
     }
   }
 
-  while (session->delayqueue && session->state == COAP_SESSION_STATE_ESTABLISHED) {
+  /* Send in order, but a CON whose lane is full stays queued while the PDUs after it go (Verge
+   * QoS lanes): an expedited CON never waits behind another class's, nor another class's behind it. */
+  coap_queue_t **at = &session->delayqueue;
+  while (*at && session->state == COAP_SESSION_STATE_ESTABLISHED) {
     ssize_t bytes_written;
-    coap_queue_t *q = session->delayqueue;
+    coap_queue_t *q = *at;
     if (q->pdu->type == COAP_MESSAGE_CON && COAP_PROTO_NOT_RELIABLE(session->proto)) {
-      if (session->con_active >= COAP_NSTART(session))
-        break;
-      session->con_active++;
+      uint8_t *lane = coap_session_con_lane(session, q->pdu);
+      if (*lane >= COAP_NSTART(session)) {
+        at = &q->next;
+        continue;
+      }
+      (*lane)++;
     }
     /* Take entry off the queue */
-    session->delayqueue = q->next;
+    *at = q->next;
     q->next = NULL;
 
     coap_log_debug("** %s: mid=0x%04x: transmitted after delay\n",
@@ -883,8 +903,8 @@ coap_session_connected(coap_session_t *session) {
         break;
     } else if (q) {
       if (bytes_written <= 0 || (size_t)bytes_written < q->pdu->used_size + q->pdu->hdr_size) {
-        q->next = session->delayqueue;
-        session->delayqueue = q;
+        q->next = *at;
+        *at = q;
         if (bytes_written > 0)
           session->partial_write = (size_t)bytes_written;
         break;
@@ -1011,6 +1031,7 @@ coap_session_disconnected_lkd(coap_session_t *session, coap_nack_reason_t reason
     session->state = COAP_SESSION_STATE_NONE;
 
   session->con_active = 0;
+  session->con_active_xp = 0;
 
   if (session->partial_pdu) {
     coap_delete_pdu_lkd(session->partial_pdu);

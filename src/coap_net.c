@@ -1001,6 +1001,7 @@ coap_session_send_pdu(coap_session_t *session, coap_pdu_t *pdu) {
   ssize_t bytes_written = -1;
   assert(pdu->hdr_size > 0);
 
+  coap_session_apply_tclass(session, pdu);
   /* Caller handles partial writes */
   bytes_written = session->sock.lfunc[COAP_LAYER_SESSION].l_write(session,
                   pdu->token - pdu->hdr_size,
@@ -1043,7 +1044,7 @@ coap_send_pdu(coap_session_t *session, coap_pdu_t *pdu, coap_queue_t *node) {
 
   if (session->state != COAP_SESSION_STATE_ESTABLISHED ||
       (pdu->type == COAP_MESSAGE_CON &&
-       session->con_active >= COAP_NSTART(session))) {
+       *coap_session_con_lane(session, pdu) >= COAP_NSTART(session))) {
     return coap_session_delay_pdu(session, pdu, node);
   }
 
@@ -1054,7 +1055,7 @@ coap_send_pdu(coap_session_t *session, coap_pdu_t *pdu, coap_queue_t *node) {
   bytes_written = coap_session_send_pdu(session, pdu);
   if (bytes_written >= 0 && pdu->type == COAP_MESSAGE_CON &&
       COAP_PROTO_NOT_RELIABLE(session->proto))
-    session->con_active++;
+    (*coap_session_con_lane(session, pdu))++;
 
   return bytes_written;
 }
@@ -1380,6 +1381,8 @@ coap_send_lkd(coap_session_t *session, coap_pdu_t *pdu) {
   assert(pdu);
 
   coap_lock_check_locked(session->context);
+  if (pdu->tclass < 0)
+    pdu->tclass = session->send_tclass;   /* before block-wise and OSCORE handling copy it (Verge QoS) */
 
   /* Check validity of sending code */
   if (!coap_check_code_class(session, pdu)) {
@@ -1740,6 +1743,8 @@ coap_send_internal(coap_session_t *session, coap_pdu_t *pdu) {
   ssize_t bytes_written;
   coap_opt_iterator_t opt_iter;
 
+  if (pdu->tclass < 0)
+    pdu->tclass = session->send_tclass;   /* sent with the session's class from now on (Verge QoS) */
   pdu->session = session;
   if (pdu->code == COAP_RESPONSE_CODE(508)) {
     /*
@@ -2010,8 +2015,7 @@ coap_retransmit(coap_context_t *context, coap_queue_t *node) {
                      (unsigned)(next_delay * 1000 / COAP_TICKS_PER_SECOND));
     }
 
-    if (node->session->con_active)
-      node->session->con_active--;
+    coap_session_con_done(node->session, node->pdu);
     bytes_written = coap_send_pdu(node->session, node->pdu, node);
 
     if (node->is_mcast) {
@@ -2042,8 +2046,8 @@ coap_retransmit(coap_context_t *context, coap_queue_t *node) {
     coap_handle_failed_notify(context, node->session, &node->pdu->actual_token);
   }
 #endif /* COAP_SERVER_SUPPORT */
-  if (node->session->con_active) {
-    node->session->con_active--;
+  if (*coap_session_con_lane(node->session, node->pdu)) {
+    coap_session_con_done(node->session, node->pdu);
     if (node->session->state == COAP_SESSION_STATE_ESTABLISHED) {
       /*
        * As there may be another CON in a different queue entry on the same
@@ -2698,8 +2702,8 @@ coap_cancel_all_messages(coap_context_t *context, coap_session_t *session,
       *p = q->next;
       coap_log_debug("** %s: mid=0x%04x: removed (6)\n",
                      coap_session_str(session), q->id);
-      if (q->pdu->type == COAP_MESSAGE_CON && session->con_active) {
-        session->con_active--;
+      if (q->pdu->type == COAP_MESSAGE_CON && *coap_session_con_lane(session, q->pdu)) {
+        coap_session_con_done(session, q->pdu);
         if (session->state == COAP_SESSION_STATE_ESTABLISHED)
           /* Flush out any entries on session->delayqueue */
           coap_session_connected(session);
@@ -4089,8 +4093,8 @@ coap_dispatch(coap_context_t *context, coap_session_t *session,
          * any wait for a first response, and tell the app it failed. */
         if (sent && sent->pdu->type == COAP_MESSAGE_CON) {
           session->doing_first = 0;
-          if (session->con_active) {
-            session->con_active--;
+          if (*coap_session_con_lane(session, sent->pdu)) {
+            coap_session_con_done(session, sent->pdu);
             if (session->state == COAP_SESSION_STATE_ESTABLISHED)
               coap_session_connected(session);
           }
@@ -4130,8 +4134,8 @@ coap_dispatch(coap_context_t *context, coap_session_t *session,
       coap_remove_from_queue(&context->sendqueue, session, pdu->mid, &sent);
     }
 
-    if (sent && session->con_active) {
-      session->con_active--;
+    if (sent && *coap_session_con_lane(session, sent->pdu)) {
+      coap_session_con_done(session, sent->pdu);
       if (session->state == COAP_SESSION_STATE_ESTABLISHED)
         /* Flush out any entries on session->delayqueue */
         coap_session_connected(session);
@@ -4263,15 +4267,15 @@ coap_dispatch(coap_context_t *context, coap_session_t *session,
     if (!is_ping_rst && !is_ext_token_rst)
       coap_log_alert("got RST for mid=0x%04x\n", pdu->mid);
 
-    if (session->con_active) {
-      session->con_active--;
+    /* find message id in sendqueue to stop retransmission */
+    coap_remove_from_queue(&context->sendqueue, session, pdu->mid, &sent);
+
+    if (*coap_session_con_lane(session, sent ? sent->pdu : NULL)) {
+      coap_session_con_done(session, sent ? sent->pdu : NULL);
       if (session->state == COAP_SESSION_STATE_ESTABLISHED)
         /* Flush out any entries on session->delayqueue */
         coap_session_connected(session);
     }
-
-    /* find message id in sendqueue to stop retransmission */
-    coap_remove_from_queue(&context->sendqueue, session, pdu->mid, &sent);
 
     if (sent) {
       coap_cancel(context, sent);

@@ -149,6 +149,9 @@ struct coap_pdu_t {
   uint8_t hdr_size;         /**< actual size used for protocol-specific
                                  header (0 until header is encoded) */
   uint8_t crit_opt;         /**< Set if unknown critical option for proxy */
+  int16_t tclass;           /**< IPv6 Traffic Class this PDU is sent with, -1 unmarked: stamped
+                                 from the session when first sent, kept by retransmissions and
+                                 copies (Verge QoS) */
   uint16_t max_opt;         /**< highest option number in PDU */
   uint32_t e_token_length;  /**< length of Token space (includes leading
                                  extended bytes */

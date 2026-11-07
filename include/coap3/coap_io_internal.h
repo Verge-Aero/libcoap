@@ -66,6 +66,7 @@ struct coap_socket_t {
   coap_address_t mcast_addr; /**< remote address and port (multicast track) */
 #endif /* COAP_CLIENT_SUPPORT */
   coap_layer_func_t lfunc[COAP_LAYER_LAST]; /**< Layer functions to use */
+  int tclass_set;          /**< Traffic Class last set on the socket + 1, 0 none (Verge QoS) */
 };
 
 /**
@@ -210,6 +211,9 @@ ssize_t coap_socket_recv(coap_socket_t *sock, coap_packet_t *packet);
  * (AF_INET6 -> IPV6_TCLASS, AF_INET -> IP_TOS). Returns 1 on success, 0 otherwise.
  */
 int coap_socket_set_tclass(coap_socket_t *sock, int family, uint8_t tclass);
+
+/* Set `pdu`'s own Traffic Class on the socket `session` sends from, if it has one (Verge QoS). */
+void coap_session_apply_tclass(coap_session_t *session, const coap_pdu_t *pdu);
 
 #ifndef coap_mcast_interface
 # define coap_mcast_interface(Local) 0

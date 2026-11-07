@@ -90,6 +90,8 @@ struct coap_session_t {
   uint16_t tx_mid;                  /**< the last message id that was used in
                                          this session */
   uint8_t con_active;               /**< Active CON request sent */
+  uint8_t con_active_xp;            /**< Active expedited CON sent (Verge QoS lane) */
+  int send_tclass;                  /**< class coap_session_set_tclass last set, -1 none (Verge QoS) */
   uint8_t csm_block_supported;      /**< CSM TCP blocks supported */
   coap_mid_t last_ping_mid;         /**< the last keepalive message id that was
                                          used in this session */
@@ -611,6 +613,17 @@ void coap_connect_session(coap_session_t *session, coap_tick_t now);
 #define COAP_ACK_RANDOM_FACTOR(s) ((s)->ack_random_factor)
 #define COAP_MAX_RETRANSMIT(s) ((s)->max_retransmit)
 #define COAP_NSTART(s) ((s)->nstart)
+
+/*
+ * Verge QoS lanes. A CON whose Traffic Class is expedited (DSCP EF, CS6 or CS7: the radio's first
+ * transmit class) counts against NSTART in a lane of its own, so it never waits in the delayqueue
+ * behind another class's outstanding exchange, nor another class's behind it. Each lane holds at
+ * most NSTART.
+ */
+/* The count of active CONs in `pdu`'s lane (the other lane for a NULL or unmarked pdu). */
+uint8_t *coap_session_con_lane(coap_session_t *session, const coap_pdu_t *pdu);
+/* An active CON in `pdu`'s lane is over: free its slot. */
+void coap_session_con_done(coap_session_t *session, const coap_pdu_t *pdu);
 #define COAP_DEFAULT_LEISURE(s) ((s)->default_leisure)
 #define COAP_PROBING_RATE(s) ((s)->probing_rate)
 /* RFC9177 */
