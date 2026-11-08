@@ -13,6 +13,7 @@ NAME
 coap_observe,
 coap_resource_set_get_observable,
 coap_resource_notify_observers,
+coap_resource_notify_observers_path,
 coap_cancel_observe,
 coap_session_set_no_observe_cancel
 - Work with CoAP observe
@@ -26,6 +27,9 @@ int _mode_);*
 
 *int coap_resource_notify_observers(coap_resource_t *_resource_,
 const coap_string_t *_query_);*
+
+*int coap_resource_notify_observers_path(coap_resource_t *_resource_,
+const coap_str_const_t *_uri_path_);*
 
 *int coap_cancel_observe(coap_session_t *_session_, coap_binary_t *_token_,
 coap_pdu_type_t _message_type_);*
@@ -130,6 +134,15 @@ The *coap_resource_notify_observers*() function needs to be called whenever the
 server application determines that there has been a change to the state of
 _resource_.  The _query_ parameter is obsolete and ignored.
 
+*Function: coap_resource_notify_observers_path()*
+
+The *coap_resource_notify_observers_path*() function is called instead of
+*coap_resource_notify_observers*() when the state of one path a subtree
+_resource_ (*COAP_RESOURCE_FLAGS_SUBTREE*) serves has changed: only the
+observers whose request was for _uri_path_ (the full path, without a leading
+'/', as *coap_get_uri_path*(3) gives it) are notified. The Observe value is
+kept per _resource_, so each observer still sees it increase.
+
 *Function: coap_cancel_observe()*
 
 The *coap_cancel_observe*() function can be used by the client to cancel an
@@ -149,6 +162,9 @@ RETURN VALUES
 -------------
 *coap_resource_notify_observers*() returns 0 if not observable or
 no observers, 1 on success.
+
+*coap_resource_notify_observers_path*() returns 0 if not observable or
+no observers of _uri_path_, 1 on success.
 
 *coap_cancel_observe*() returns 0 on failure, 1 on success.
 

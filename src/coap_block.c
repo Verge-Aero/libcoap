@@ -643,6 +643,29 @@ error:
 
 #if COAP_SERVER_SUPPORT
 /*
+ * The path of a request to a subtree resource, NULL for any other resource:
+ * each path a subtree resource serves has its own block-wise transfers.
+ */
+static coap_string_t *
+coap_subtree_request_path(const coap_resource_t *resource,
+                          const coap_pdu_t *request) {
+  if (!resource || !(resource->flags & COAP_RESOURCE_FLAGS_SUBTREE) ||
+      !request)
+    return NULL;
+  return coap_get_uri_path(request);
+}
+
+/* Whether a Block2 transfer was for the request path, if it has one */
+static int
+coap_lg_xmit_path_matches(const coap_lg_xmit_t *lg_xmit,
+                          const coap_string_t *uri_path) {
+  if (!lg_xmit->b.b2.uri_path && !uri_path)
+    return 1;
+  return lg_xmit->b.b2.uri_path && uri_path &&
+         coap_string_equal(lg_xmit->b.b2.uri_path, uri_path);
+}
+
+/*
  * Find the response lg_xmit
  */
 coap_lg_xmit_t *
@@ -651,6 +674,7 @@ coap_find_lg_xmit_response(const coap_session_t *session,
                            const coap_resource_t *resource,
                            const coap_string_t *query) {
   coap_lg_xmit_t *lg_xmit;
+  coap_string_t *uri_path = coap_subtree_request_path(resource, request);
   coap_opt_iterator_t opt_iter;
   coap_opt_t *rtag_opt = coap_check_option(request,
                                            COAP_OPTION_RTAG,
@@ -666,7 +690,8 @@ coap_find_lg_xmit_response(const coap_session_t *session,
         request->code != lg_xmit->b.b2.request_method ||
         !coap_string_equal(query ? query : &empty,
                            lg_xmit->b.b2.query ?
-                           lg_xmit->b.b2.query : &empty)) {
+                           lg_xmit->b.b2.query : &empty) ||
+        !coap_lg_xmit_path_matches(lg_xmit, uri_path)) {
       /* try out the next one */
       continue;
     }
@@ -678,8 +703,10 @@ coap_find_lg_xmit_response(const coap_session_t *session,
           memcmp(lg_xmit->b.b2.rtag, rtag, rtag_length) != 0)
         continue;
     }
+    coap_delete_string(uri_path);
     return lg_xmit;
   }
+  coap_delete_string(uri_path);
   return NULL;
 }
 #endif /* COAP_SERVER_SUPPORT */
@@ -1035,6 +1062,16 @@ coap_add_data_large_internal(coap_session_t *session,
        * token match is used for Block1 large body transmissions
        */
       lg_xmit->b.b2.resource = resource;
+      if (resource && (resource->flags & COAP_RESOURCE_FLAGS_SUBTREE)) {
+        coap_string_t *uri_path = coap_subtree_request_path(resource, request);
+
+        lg_xmit->b.b2.uri_path = uri_path ?
+                                 coap_new_str_const(uri_path->s, uri_path->length) :
+                                 NULL;
+        coap_delete_string(uri_path);
+        if (!lg_xmit->b.b2.uri_path)
+          goto fail;
+      }
       if (query) {
         lg_xmit->b.b2.query = coap_new_string(query->length);
         if (lg_xmit->b.b2.query) {
@@ -2307,6 +2344,7 @@ coap_send_q_block1(coap_session_t *session,
 coap_mid_t
 coap_send_q_block2(coap_session_t *session,
                    coap_resource_t *resource,
+                   const coap_pdu_t *request,
                    const coap_string_t *query,
                    coap_pdu_code_t request_method,
                    coap_block_b_t block,
@@ -2315,15 +2353,18 @@ coap_send_q_block2(coap_session_t *session,
   /* Need to send up to MAX_PAYLOAD blocks if this is a Q_BLOCK2 */
   coap_lg_xmit_t *lg_xmit;
   coap_string_t empty = { 0, NULL};
+  coap_string_t *uri_path = coap_subtree_request_path(resource, request);
 
   LL_FOREACH(session->lg_xmit, lg_xmit) {
     if (lg_xmit->option == COAP_OPTION_Q_BLOCK2 &&
         resource == lg_xmit->b.b2.resource &&
         request_method == lg_xmit->b.b2.request_method &&
         coap_string_equal(query ? query : &empty,
-                          lg_xmit->b.b2.query ? lg_xmit->b.b2.query : &empty))
+                          lg_xmit->b.b2.query ? lg_xmit->b.b2.query : &empty) &&
+        coap_lg_xmit_path_matches(lg_xmit, uri_path))
       break;
   }
+  coap_delete_string(uri_path);
   return coap_send_q_blocks(session, lg_xmit, block, response, send_response);
 }
 #endif /* COAP_Q_BLOCK_SUPPORT */
@@ -2598,8 +2639,10 @@ coap_block_delete_lg_xmit(coap_session_t *session,
   }
   if (COAP_PDU_IS_REQUEST(&lg_xmit->pdu))
     coap_delete_binary(lg_xmit->b.b1.app_token);
-  else
+  else {
     coap_delete_string(lg_xmit->b.b2.query);
+    coap_delete_str_const(lg_xmit->b.b2.uri_path);
+  }
 
   coap_log_debug("** %s: lg_xmit %p released\n",
                  coap_session_str(session), (void *)lg_xmit);
@@ -3157,11 +3200,15 @@ coap_handle_request_put_block(coap_context_t *context,
           memcmp(lg_srcv->rtag, rtag, rtag_length) != 0)
         continue;
     }
-    if (resource == lg_srcv->resource) {
+    if (resource == lg_srcv->resource &&
+        !(resource->flags & COAP_RESOURCE_FLAGS_SUBTREE)) {
       break;
     }
+    /* The paths a subtree resource serves each have their own transfers */
     if ((lg_srcv->resource == context->unknown_resource ||
-         resource == context->proxy_uri_resource) &&
+         resource == context->proxy_uri_resource ||
+         (resource == lg_srcv->resource &&
+          (resource->flags & COAP_RESOURCE_FLAGS_SUBTREE))) &&
         coap_string_equal(uri_path, lg_srcv->uri_path))
       break;
   }
@@ -3187,7 +3234,8 @@ coap_handle_request_put_block(coap_context_t *context,
     memset(lg_srcv, 0, sizeof(coap_lg_srcv_t));
     lg_srcv->resource = resource;
     if (resource == context->unknown_resource ||
-        resource == context->proxy_uri_resource)
+        resource == context->proxy_uri_resource ||
+        (resource->flags & COAP_RESOURCE_FLAGS_SUBTREE))
       lg_srcv->uri_path = coap_new_str_const(uri_path->s, uri_path->length);
     lg_srcv->content_format = fmt;
     lg_srcv->total_len = total;

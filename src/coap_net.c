@@ -3283,7 +3283,7 @@ handle_request(coap_context_t *context, coap_session_t *session, coap_pdu_t *pdu
   if (!is_proxy_uri && !is_proxy_scheme) {
     /* try to find the resource from the request URI */
     coap_str_const_t uri_path_c = { uri_path->length, uri_path->s };
-    resource = coap_get_resource_from_uri_path_lkd(context, &uri_path_c);
+    resource = coap_get_resource_for_request_path_lkd(context, &uri_path_c);
   }
 
   if ((resource == NULL) || (resource->is_unknown == 1) ||
@@ -3663,7 +3663,7 @@ skip_handler:
           !lg_xmit_ctrl && response->code == COAP_RESPONSE_CODE(205) &&
           coap_get_block_b(session, response, COAP_OPTION_Q_BLOCK2, &block) &&
           block.m) {
-        if (coap_send_q_block2(session, resource, query, pdu->code, block,
+        if (coap_send_q_block2(session, resource, pdu, query, pdu->code, block,
                                response,
                                COAP_SEND_INC_PDU) == COAP_INVALID_MID)
           coap_log_debug("cannot send response for mid=0x%x\n", mid);

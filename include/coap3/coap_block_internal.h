@@ -131,6 +131,8 @@ typedef struct coap_l_block1_t {
 typedef struct coap_l_block2_t {
   coap_resource_t *resource; /**< associated resource */
   coap_string_t *query;  /**< Associated query for the resource */
+  coap_str_const_t *uri_path; /**< The request's path if the resource is a
+                                   subtree resource, else NULL */
   uint64_t etag;         /**< ETag value */
   coap_pdu_code_t request_method; /**< Method used to request this data */
   uint8_t rtag_set;      /**< Set if RTag is in receive PDU */
@@ -298,6 +300,7 @@ coap_tick_t coap_block_check_q_block2_xmit(coap_session_t *session,
 
 coap_mid_t coap_send_q_block2(coap_session_t *session,
                               coap_resource_t *resource,
+                              const coap_pdu_t *request,
                               const coap_string_t *query,
                               coap_pdu_code_t request_method,
                               coap_block_b_t block,

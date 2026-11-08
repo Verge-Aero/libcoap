@@ -25,6 +25,7 @@ coap_resource_get_userdata,
 coap_resource_release_userdata_handler,
 coap_resource_get_uri_path,
 coap_get_resource_from_uri_path,
+coap_resource_set_child_handler,
 coap_print_wellknown
 - Work with CoAP resources
 
@@ -70,6 +71,9 @@ coap_resource_release_userdata_handler_t _callback_);*
 
 *coap_resource_t *coap_get_resource_from_uri_path(coap_context_t *_context_,
 coap_str_const_t *_uri_path_);*
+
+*void coap_resource_set_child_handler(coap_resource_t *_resource_,
+coap_resource_child_handler_t _handler_);*
 
 *coap_print_status_t coap_print_wellknown(coap_context_t *context,
 unsigned char *buf, size_t *buflen, size_t offset,
@@ -209,6 +213,17 @@ Disable libcoap library suppressing 5.xx multicast responses (overridden by
 https://rfc-editor.org/rfc/rfc7967[RFC7967] No-Response option) for multicast
 requests.
 
+*COAP_RESOURCE_FLAGS_SUBTREE*::
+The resource also serves every path below its own. A request whose path has
+no resource of its own is passed to the subtree resource that is its nearest
+ancestor, compared whole segment by whole segment: a subtree resource "a/b"
+serves "a/b/c" and "a/b/c/d", but not "a/bc". A resource registered for the
+exact path still takes its own requests. The request handlers see the
+request's own path (*coap_get_uri_path*(3)). Observers, block-wise transfers
+and *coap_resource_notify_observers_path*(3) are kept per request path, so the
+paths of one subtree resource are independent of each other.
+*coap_resource_set_child_handler*() lists the paths in ".well-known/core".
+
 *NOTE:* _uri_path_, if not 7 bit readable ASCII, binary bytes must be hex
 encoded according to the rules defined in
 "https://rfc-editor.org/rfc/rfc3986#section-2.1[RFC3986 2.1. Percent-Encoding]".
@@ -326,6 +341,37 @@ the _resource_ definion.
 
 The *coap_get_resource_from_uri_path*() function is used to return the resource
 identified by the unique string _uri_path_ associated with _context_.
+
+*Function: coap_resource_set_child_handler()*
+
+The *coap_resource_set_child_handler*() function registers _handler_, which
+lists the paths a subtree _resource_ (*COAP_RESOURCE_FLAGS_SUBTREE*) serves in
+".well-known/core". _handler_ is called with _index_ 0, 1, 2 and so on, and
+for each child sets the child's full path (without a leading '/') and its link
+attributes in the *coap_resource_child_t* it is passed, returning 1, until it
+returns 0 for the first index that has no child. The data it points to needs
+to stay valid only until _handler_ is called again. Each child is printed as
+its own link and filtered like any resource; a child of a resource with
+*COAP_RESOURCE_FLAGS_OSCORE_ONLY* carries "osc". The resource's own link is
+printed too unless *COAP_RESOURCE_HIDE_WELLKNOWN_CORE* is set in its flags.
+
+[source, c]
+----
+typedef struct coap_link_attr_t {
+  coap_str_const_t name;   /* the attribute's name */
+  coap_str_const_t value;  /* the attribute's value, s == NULL for none */
+} coap_link_attr_t;
+
+typedef struct coap_resource_child_t {
+  coap_str_const_t uri_path;       /* the full path, without a leading '/' */
+  const coap_link_attr_t *attrs;   /* the link's attributes */
+  size_t num_attrs;                /* the number of entries in attrs */
+} coap_resource_child_t;
+
+typedef int (*coap_resource_child_handler_t)(coap_resource_t *resource,
+                                             size_t index,
+                                             coap_resource_child_t *child);
+----
 
 *Function: coap_print_wellknown()*
 

@@ -64,6 +64,20 @@ COAP_API int coap_resource_notify_observers(coap_resource_t *resource,
                                             const coap_string_t *query);
 
 /**
+ * Initiate the sending of an Observe packet for the observers of one path
+ * of a subtree resource (COAP_RESOURCE_FLAGS_SUBTREE): those whose request
+ * was for @p uri_path. The resource's other observers are not notified.
+ *
+ * @param resource The subtree resource.
+ * @param uri_path The full path the observers requested, without a leading
+ *                 '/', as coap_get_uri_path() gives it.
+ *
+ * @return         @c 1 if an Observe has been triggered, @c 0 otherwise.
+ */
+COAP_API int coap_resource_notify_observers_path(coap_resource_t *resource,
+                                                 const coap_str_const_t *uri_path);
+
+/**
  * Checks all known resources to see if they are dirty and then notifies
  * subscribed observers.
  *

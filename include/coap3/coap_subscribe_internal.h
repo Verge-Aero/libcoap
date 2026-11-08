@@ -64,6 +64,8 @@ struct coap_subscription_t {
                      *   sent (in that case, the resource's partially
                      *   dirty flag is set too) */
   coap_cache_key_t *cache_key; /** cache_key to identify requester */
+  coap_str_const_t *uri_path;  /**< the path requested, for a subtree
+                                    resource; NULL otherwise */
   coap_pdu_t *pdu;         /**< PDU to use for additional requests */
 };
 
@@ -181,6 +183,20 @@ void coap_delete_observers(coap_context_t *context, coap_session_t *session);
  */
 int coap_resource_notify_observers_lkd(coap_resource_t *resource,
                                        const coap_string_t *query);
+
+/**
+ * Initiate the sending of an Observe packet for the observers of one path
+ * of a subtree resource.
+ *
+ * Note: This function must be called in the locked state.
+ *
+ * @param resource The subtree resource.
+ * @param uri_path The full path the observers requested.
+ *
+ * @return         @c 1 if an Observe has been triggered, @c 0 otherwise.
+ */
+int coap_resource_notify_observers_path_lkd(coap_resource_t *resource,
+                                            const coap_str_const_t *uri_path);
 
 /**
  * Checks all known resources to see if they are dirty and then notifies

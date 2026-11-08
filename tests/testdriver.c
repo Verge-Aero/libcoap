@@ -22,6 +22,7 @@
 #include "test_session.h"
 #include "test_sendqueue.h"
 #include "test_wellknown.h"
+#include "test_subtree.h"
 #include "test_tls.h"
 #if COAP_OSCORE_SUPPORT && COAP_SERVER_SUPPORT
 #include "test_oscore.h"
@@ -49,6 +50,7 @@ main(int argc COAP_UNUSED, char **argv COAP_UNUSED) {
 #endif /* COAP_CLIENT_SUPPORT */
 #if COAP_SERVER_SUPPORT && COAP_CLIENT_SUPPORT
   t_init_wellknown_tests();
+  t_init_subtree_tests();
 #endif /* COAP_SERVER_SUPPORT && COAP_CLIENT_SUPPORT */
   t_init_tls_tests();
 #if COAP_OSCORE_SUPPORT && COAP_SERVER_SUPPORT

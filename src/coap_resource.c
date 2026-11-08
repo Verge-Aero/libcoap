@@ -117,6 +117,103 @@ static coap_str_const_t coap_default_uri_wellknown = {
   (const uint8_t *)COAP_DEFAULT_URI_WELLKNOWN
 };
 
+#ifndef WITHOUT_QUERY_FILTER
+#define MATCH_URI       0x01
+#define MATCH_PREFIX    0x02
+#define MATCH_SUBSTRING 0x04
+
+/*
+ * Whether the link to uri_path, with the value of attribute resource_param
+ * attr_value (NULL if it has none), passes the .well-known/core query filter.
+ */
+static int
+coap_link_passes_filter(const coap_str_const_t *uri_path,
+                        const coap_str_const_t *attr_value,
+                        const coap_str_const_t *resource_param,
+                        const coap_str_const_t *query_pattern, int flags) {
+  coap_str_const_t unquoted_val;
+
+  if (!resource_param->length)
+    return 1;
+  if (flags & MATCH_URI)
+    return match(uri_path, query_pattern, (flags & MATCH_PREFIX) != 0,
+                 (flags & MATCH_SUBSTRING) != 0);
+  if (!attr_value || !attr_value->s)
+    return 0;
+  unquoted_val = *attr_value;
+  if (attr_value->s[0] == '"') {          /* if attribute has a quoted value, remove double quotes */
+    unquoted_val.length -= 2;
+    unquoted_val.s += 1;
+  }
+  return match(&unquoted_val, query_pattern, (flags & MATCH_PREFIX) != 0,
+               (flags & MATCH_SUBSTRING) != 0);
+}
+
+/* The value of a child link's attribute name, NULL if it has none. */
+static const coap_str_const_t *
+coap_child_attr_value(const coap_resource_child_t *child,
+                      const coap_str_const_t *name) {
+  size_t i;
+
+  for (i = 0; i < child->num_attrs; i++) {
+    if (coap_string_equal(&child->attrs[i].name, name))
+      return child->attrs[i].value.s ? &child->attrs[i].value : NULL;
+  }
+  return NULL;
+}
+#endif /* WITHOUT_QUERY_FILTER */
+
+/*
+ * Writes the link to a path a subtree resource serves, as coap_print_link()
+ * writes a resource's own.
+ */
+static coap_print_status_t
+coap_print_child_link(const coap_resource_t *resource,
+                      const coap_resource_child_t *child,
+                      unsigned char *buf, size_t *len, size_t *offset) {
+  unsigned char *p = buf;
+  const uint8_t *bufend = buf + *len;
+  coap_print_status_t result = 0;
+  coap_print_status_t output_length = 0;
+  const size_t old_offset = *offset;
+  size_t n;
+
+  *len = 0;
+  PRINT_COND_WITH_OFFSET(p, bufend, *offset, '<', *len);
+  PRINT_COND_WITH_OFFSET(p, bufend, *offset, '/', *len);
+  COPY_COND_WITH_OFFSET(p, bufend, *offset,
+                        child->uri_path.s, child->uri_path.length, *len);
+  PRINT_COND_WITH_OFFSET(p, bufend, *offset, '>', *len);
+
+  for (n = 0; n < child->num_attrs; n++) {
+    PRINT_COND_WITH_OFFSET(p, bufend, *offset, ';', *len);
+    COPY_COND_WITH_OFFSET(p, bufend, *offset, child->attrs[n].name.s,
+                          child->attrs[n].name.length, *len);
+    if (child->attrs[n].value.s) {
+      PRINT_COND_WITH_OFFSET(p, bufend, *offset, '=', *len);
+      COPY_COND_WITH_OFFSET(p, bufend, *offset, child->attrs[n].value.s,
+                            child->attrs[n].value.length, *len);
+    }
+  }
+#if COAP_OSCORE_SUPPORT
+  /* The resource that serves the path decides its protection */
+  if (resource->flags & COAP_RESOURCE_FLAGS_OSCORE_ONLY)
+    COPY_COND_WITH_OFFSET(p, bufend, *offset, ";osc", 4, *len);
+#else /* ! COAP_OSCORE_SUPPORT */
+  (void)resource;
+#endif /* ! COAP_OSCORE_SUPPORT */
+
+  output_length = (coap_print_status_t)(p - buf);
+  if (output_length > COAP_PRINT_STATUS_MAX) {
+    return COAP_PRINT_STATUS_ERROR;
+  }
+  result = (coap_print_status_t)output_length;
+  if (result + old_offset - *offset < *len) {
+    result |= COAP_PRINT_STATUS_TRUNC;
+  }
+  return result;
+}
+
 coap_print_status_t
 coap_print_wellknown_lkd(coap_context_t *context, unsigned char *buf,
                          size_t *buflen, size_t offset,
@@ -125,7 +222,7 @@ coap_print_wellknown_lkd(coap_context_t *context, unsigned char *buf,
   unsigned char *p = buf;
   const uint8_t *bufend = buf + *buflen;
   size_t left, written = 0;
-  coap_print_status_t result;
+  coap_print_status_t result = 0;
   const size_t old_offset = offset;
   int subsequent_resource = 0;
 #ifdef WITHOUT_QUERY_FILTER
@@ -133,9 +230,6 @@ coap_print_wellknown_lkd(coap_context_t *context, unsigned char *buf,
 #else
   coap_str_const_t resource_param = { 0, NULL }, query_pattern = { 0, NULL };
   int flags = 0; /* MATCH_SUBSTRING, MATCH_PREFIX, MATCH_URI */
-#define MATCH_URI       0x01
-#define MATCH_PREFIX    0x02
-#define MATCH_SUBSTRING 0x04
   static const coap_str_const_t _rt_attributes[] = {
     {2, (const uint8_t *)"rt"},
     {2, (const uint8_t *)"if"},
@@ -190,54 +284,77 @@ coap_print_wellknown_lkd(coap_context_t *context, unsigned char *buf,
 #endif /* WITHOUT_QUERY_FILTER */
 
   RESOURCES_ITER(context->resources, r) {
+    size_t index;
+    coap_resource_child_t child;
 
     if (coap_string_equal(r->uri_path, &coap_default_uri_wellknown)) {
       /* server app has defined a resource for .well-known/core - ignore */
       continue;
     }
-#ifndef WITHOUT_QUERY_FILTER
-    if (resource_param.length) { /* there is a query filter */
 
-      if (flags & MATCH_URI) {        /* match resource URI */
-        if (!match(r->uri_path, &query_pattern, (flags & MATCH_PREFIX) != 0,
-                   (flags & MATCH_SUBSTRING) != 0))
-          continue;
-      } else {                        /* match attribute */
-        coap_attr_t *attr;
-        coap_str_const_t unquoted_val;
-        attr = coap_find_attr(r, &resource_param);
-        if (!attr || !attr->value)
-          continue;
-        unquoted_val = *attr->value;
-        if (attr->value->s[0] == '"') {          /* if attribute has a quoted value, remove double quotes */
-          unquoted_val.length -= 2;
-          unquoted_val.s += 1;
-        }
-        if (!(match(&unquoted_val, &query_pattern,
-                    (flags & MATCH_PREFIX) != 0,
-                    (flags & MATCH_SUBSTRING) != 0)))
-          continue;
+    if (!(r->flags & COAP_RESOURCE_HIDE_WELLKNOWN_CORE)) {
+#ifndef WITHOUT_QUERY_FILTER
+      coap_str_const_t *attr_value = NULL;
+
+      if (resource_param.length && !(flags & MATCH_URI)) {
+        coap_attr_t *attr = coap_find_attr(r, &resource_param);
+
+        attr_value = attr ? attr->value : NULL;
       }
-    }
+      if (!coap_link_passes_filter(r->uri_path, attr_value, &resource_param,
+                                   &query_pattern, flags))
+        goto children;
 #endif /* WITHOUT_QUERY_FILTER */
 
-    if (!subsequent_resource) {        /* this is the first resource  */
-      subsequent_resource = 1;
-    } else {
-      PRINT_COND_WITH_OFFSET(p, bufend, offset, ',', written);
+      if (!subsequent_resource) {        /* this is the first resource  */
+        subsequent_resource = 1;
+      } else {
+        PRINT_COND_WITH_OFFSET(p, bufend, offset, ',', written);
+      }
+
+      left = bufend - p; /* calculate available space */
+      result = coap_print_link(r, p, &left, &offset);
+
+      if (result & COAP_PRINT_STATUS_ERROR) {
+        break;
+      }
+
+      /* coap_print_link() returns the number of characters that
+       * where actually written to p. Now advance to its end. */
+      p += COAP_PRINT_OUTPUT_LENGTH(result);
+      written += left;
     }
 
-    left = bufend - p; /* calculate available space */
-    result = coap_print_link(r, p, &left, &offset);
-
-    if (result & COAP_PRINT_STATUS_ERROR) {
+#ifndef WITHOUT_QUERY_FILTER
+children:
+#endif /* WITHOUT_QUERY_FILTER */
+    if (!(r->flags & COAP_RESOURCE_FLAGS_SUBTREE) || !r->child_handler)
+      continue;
+    for (index = 0; ; index++) {
+      memset(&child, 0, sizeof(child));
+      if (!r->child_handler(r, index, &child))
+        break;
+#ifndef WITHOUT_QUERY_FILTER
+      if (!coap_link_passes_filter(&child.uri_path,
+                                   (flags & MATCH_URI) ? NULL :
+                                   coap_child_attr_value(&child, &resource_param),
+                                   &resource_param, &query_pattern, flags))
+        continue;
+#endif /* WITHOUT_QUERY_FILTER */
+      if (!subsequent_resource) {
+        subsequent_resource = 1;
+      } else {
+        PRINT_COND_WITH_OFFSET(p, bufend, offset, ',', written);
+      }
+      left = bufend - p;
+      result = coap_print_child_link(r, &child, p, &left, &offset);
+      if (result & COAP_PRINT_STATUS_ERROR)
+        break;
+      p += COAP_PRINT_OUTPUT_LENGTH(result);
+      written += left;
+    }
+    if (result & COAP_PRINT_STATUS_ERROR)
       break;
-    }
-
-    /* coap_print_link() returns the number of characters that
-     * where actually written to p. Now advance to its end. */
-    p += COAP_PRINT_OUTPUT_LENGTH(result);
-    written += left;
   }
 
   *buflen = written;
@@ -531,6 +648,7 @@ coap_free_resource(coap_resource_t *resource) {
     coap_session_release_lkd(obs->session);
     coap_delete_pdu_lkd(obs->pdu);
     coap_delete_cache_key(obs->cache_key);
+    coap_delete_str_const(obs->uri_path);
     coap_free_type(COAP_SUBSCRIPTION, obs);
   }
   if (resource->proxy_name_count && resource->proxy_name_list) {
@@ -688,6 +806,39 @@ coap_get_resource_from_uri_path_lkd(coap_context_t *context,
   RESOURCES_FIND(context->resources, uri_path, result);
 
   return result;
+}
+
+coap_resource_t *
+coap_get_resource_for_request_path_lkd(coap_context_t *context,
+                                       coap_str_const_t *uri_path) {
+  coap_resource_t *result;
+  coap_str_const_t ancestor;
+
+  coap_lock_check_locked(context);
+
+  RESOURCES_FIND(context->resources, uri_path, result);
+  if (result)
+    return result;
+
+  /*
+   * Each segment of a request's path is percent-encoded with '/' escaped
+   * (coap_get_uri_path()), so a '/' is always a segment boundary.  Drop the
+   * last segment until a subtree resource serves what is left.
+   */
+  ancestor = *uri_path;
+  while (ancestor.length) {
+    size_t len = ancestor.length;
+
+    while (len && ancestor.s[len - 1] != '/')
+      len--;
+    if (len == 0)
+      break;
+    ancestor.length = len - 1;
+    RESOURCES_FIND(context->resources, &ancestor, result);
+    if (result && (result->flags & COAP_RESOURCE_FLAGS_SUBTREE))
+      return result;
+  }
+  return NULL;
 }
 
 coap_print_status_t
@@ -885,6 +1036,20 @@ coap_add_observer(coap_resource_t *resource,
       return NULL;
     }
   }
+  if (resource->flags & COAP_RESOURCE_FLAGS_SUBTREE) {
+    /* A subtree resource's observers are notified per path */
+    coap_string_t *uri_path = coap_get_uri_path(request);
+
+    if (uri_path)
+      s->uri_path = coap_new_str_const(uri_path->s, uri_path->length);
+    coap_delete_string(uri_path);
+    if (s->uri_path == NULL) {
+      coap_delete_pdu_lkd(s->pdu);
+      coap_delete_cache_key(cache_key);
+      coap_free_type(COAP_SUBSCRIPTION, s);
+      return NULL;
+    }
+  }
   s->cache_key = cache_key;
   s->session = coap_session_reference_lkd(session);
 
@@ -1036,6 +1201,7 @@ coap_delete_observer_internal(coap_resource_t *resource, coap_session_t *session
     coap_session_release_lkd(session);
     coap_delete_pdu_lkd(s->pdu);
     coap_delete_cache_key(s->cache_key);
+    coap_delete_str_const(s->uri_path);
     coap_free_type(COAP_SUBSCRIPTION, s);
   }
 
@@ -1100,6 +1266,7 @@ coap_delete_observers(coap_context_t *context, coap_session_t *session) {
         coap_session_release_lkd(session);
         coap_delete_pdu_lkd(s->pdu);
         coap_delete_cache_key(s->cache_key);
+        coap_delete_str_const(s->uri_path);
         coap_free_type(COAP_SUBSCRIPTION, s);
       }
     }
@@ -1289,7 +1456,7 @@ coap_notify_observers(coap_context_t *context, coap_resource_t *r,
                              &block) &&
             block.m) {
           query = coap_get_query(obs->pdu);
-          mid = coap_send_q_block2(obs->session, r, query, obs->pdu->code,
+          mid = coap_send_q_block2(obs->session, r, obs->pdu, query, obs->pdu->code,
                                    block, response, 1);
           coap_delete_string(query);
           goto finish;
@@ -1349,6 +1516,57 @@ coap_resource_notify_observers(coap_resource_t *r,
   return ret;
 }
 
+COAP_API int
+coap_resource_notify_observers_path(coap_resource_t *r,
+                                    const coap_str_const_t *uri_path) {
+  int ret;
+
+  coap_lock_lock(r->context, return 0);
+  ret = coap_resource_notify_observers_path_lkd(r, uri_path);
+  coap_lock_unlock(r->context);
+  return ret;
+}
+
+int
+coap_resource_notify_observers_path_lkd(coap_resource_t *r,
+                                        const coap_str_const_t *uri_path) {
+  coap_subscription_t *obs;
+  int found = 0;
+
+  coap_lock_check_locked(r->context);
+  if (!r->observable || !uri_path)
+    return 0;
+
+  /*
+   * Only this path's observers are marked: the resource is partially dirty,
+   * so coap_notify_observers() runs the handler for the marked ones alone.
+   */
+  LL_FOREACH(r->subscribers, obs) {
+    if (obs->uri_path && coap_string_equal(obs->uri_path, uri_path)) {
+      obs->dirty = 1;
+      found = 1;
+    }
+  }
+  if (!found)
+    return 0;
+  r->partiallydirty = 1;
+
+  /* Increment value for next Observe use. Observe value must be < 2^24 */
+  r->observe = (r->observe + 1) & 0xFFFFFF;
+
+  if (r->context->track_observe_value) {
+    /* Track last used observe value */
+    if ((r->observe % r->context->observe_save_freq) == 0)
+      r->context->track_observe_value(r->context, r->uri_path,
+                                      r->observe,
+                                      r->context->observe_user_data);
+  }
+
+  r->context->observe_pending = 1;
+  coap_update_io_timer(r->context, 0);
+  return 1;
+}
+
 int
 coap_resource_notify_observers_lkd(coap_resource_t *r,
                                    const coap_string_t *query COAP_UNUSED) {
@@ -1388,6 +1606,12 @@ void
 coap_resource_set_block_stream(coap_resource_t *resource,
                                coap_block_body_open_t open_fn) {
   resource->block_stream_open = open_fn;
+}
+
+void
+coap_resource_set_child_handler(coap_resource_t *resource,
+                                coap_resource_child_handler_t handler) {
+  resource->child_handler = handler;
 }
 
 void

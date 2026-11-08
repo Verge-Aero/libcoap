@@ -177,6 +177,21 @@ typedef void (*coap_method_handler_t)(coap_resource_t *resource,
 #define COAP_RESOURCE_SAFE_REQUEST_HANDLER 0x4000
 
 /**
+ * The resource also serves every path below its own (a subtree). A request
+ * whose path has no resource of its own is passed to the subtree resource that
+ * is its nearest ancestor, compared whole segment by whole segment: a subtree
+ * resource "a/b" serves "a/b/c" and "a/b/c/d", but not "a/bc". A resource
+ * registered for the exact path still takes its own requests.
+ *
+ * The request handlers see the request's own path (coap_get_uri_path()).
+ * Observers, block-wise transfers and coap_resource_notify_observers_path()
+ * are kept per request path, so the paths of one subtree resource are
+ * independent of each other. coap_resource_set_child_handler() lists the
+ * paths in .well-known/core.
+ */
+#define COAP_RESOURCE_FLAGS_SUBTREE 0x8000
+
+/**
  * Creates a new resource object and initializes the link field to the string
  * @p uri_path. This function returns the new coap_resource_t object.
  *
@@ -512,6 +527,54 @@ typedef uint32_t coap_print_status_t;
 #define COAP_PRINT_OUTPUT_LENGTH(v) ((v) & COAP_PRINT_STATUS_MAX)
 #define COAP_PRINT_STATUS_ERROR 0x80000000UL
 #define COAP_PRINT_STATUS_TRUNC 0x40000000UL
+
+/**
+ * An attribute of a link reported by a child handler: @p value.s is @c NULL
+ * for an attribute without a value (e.g. "obs").
+ */
+typedef struct coap_link_attr_t {
+  coap_str_const_t name;   /**< the attribute's name */
+  coap_str_const_t value;  /**< the attribute's value, s == NULL for none */
+} coap_link_attr_t;
+
+/**
+ * One path a subtree resource serves, as reported for .well-known/core.
+ * The data pointed to needs to stay valid only until the child handler is
+ * called again.
+ */
+typedef struct coap_resource_child_t {
+  coap_str_const_t uri_path;       /**< the full path, without a leading '/' */
+  const coap_link_attr_t *attrs;   /**< the link's attributes */
+  size_t num_attrs;                /**< the number of entries in @p attrs */
+} coap_resource_child_t;
+
+/**
+ * Callback that reports the paths a subtree resource serves, one per call,
+ * for .well-known/core.
+ *
+ * @param resource The subtree resource.
+ * @param index    The child to report, counting from 0.
+ * @param child    Set to the child's path and attributes.
+ *
+ * @return @c 1 if @p child was set, @c 0 if there is no child @p index (the
+ *         children are reported in order until @c 0 is returned).
+ */
+typedef int (*coap_resource_child_handler_t)(coap_resource_t *resource,
+                                             size_t index,
+                                             coap_resource_child_t *child);
+
+/**
+ * Registers the callback that lists the paths a subtree resource
+ * (COAP_RESOURCE_FLAGS_SUBTREE) serves in .well-known/core. Each child is
+ * printed as its own link and filtered like any resource; a child of a
+ * resource with COAP_RESOURCE_FLAGS_OSCORE_ONLY carries "osc". The resource's
+ * own link is printed too unless COAP_RESOURCE_HIDE_WELLKNOWN_CORE is set.
+ *
+ * @param resource The subtree resource.
+ * @param handler  The callback, or @c NULL to list no children.
+ */
+void coap_resource_set_child_handler(coap_resource_t *resource,
+                                     coap_resource_child_handler_t handler);
 
 /**
  * Writes a description of this resource in link-format to given text buffer. @p

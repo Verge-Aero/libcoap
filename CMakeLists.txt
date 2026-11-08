@@ -881,6 +881,8 @@ if(ENABLE_TESTS)
     ${CMAKE_CURRENT_LIST_DIR}/tests/test_sendqueue.h
     ${CMAKE_CURRENT_LIST_DIR}/tests/test_session.c
     ${CMAKE_CURRENT_LIST_DIR}/tests/test_session.h
+    ${CMAKE_CURRENT_LIST_DIR}/tests/test_subtree.c
+    ${CMAKE_CURRENT_LIST_DIR}/tests/test_subtree.h
     ${CMAKE_CURRENT_LIST_DIR}/tests/test_tls.c
     ${CMAKE_CURRENT_LIST_DIR}/tests/test_tls.h
     ${CMAKE_CURRENT_LIST_DIR}/tests/test_uri.c

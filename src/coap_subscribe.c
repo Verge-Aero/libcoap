@@ -164,8 +164,8 @@ coap_persist_observe_add_lkd(coap_context_t *context,
   if (!uri_path)
     goto malformed;
 
-  r = coap_get_resource_from_uri_path_lkd(session->context,
-                                          (coap_str_const_t *)uri_path);
+  r = coap_get_resource_for_request_path_lkd(session->context,
+                                             (coap_str_const_t *)uri_path);
   if (r == NULL) {
     coap_log_warn("coap_persist_observe_add: resource '%s' not defined\n",
                   uri_path->s);

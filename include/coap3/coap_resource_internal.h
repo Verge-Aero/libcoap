@@ -74,6 +74,12 @@ struct coap_resource_t {
    */
   coap_block_body_open_t block_stream_open;
 
+  /**
+   * If set (via coap_resource_set_child_handler()), lists the paths a subtree
+   * resource serves in .well-known/core.
+   */
+  coap_resource_child_handler_t child_handler;
+
   UT_hash_handle hh;
 
   coap_attr_t *link_attr; /**< attributes to be included with the link format */
@@ -181,6 +187,22 @@ void coap_delete_all_resources(coap_context_t *context);
  */
 coap_resource_t *coap_get_resource_from_uri_path_lkd(coap_context_t *context,
                                                      coap_str_const_t *uri_path);
+
+/**
+ * Returns the resource that serves a request for @p uri_path: the resource
+ * registered for that exact path, else the subtree resource
+ * (COAP_RESOURCE_FLAGS_SUBTREE) that is its nearest ancestor, compared whole
+ * segment by whole segment. Returns @c NULL if neither exists.
+ *
+ * Note: This function must be called in the locked state.
+ *
+ * @param context  The context to look for this resource.
+ * @param uri_path The path of the request.
+ *
+ * @return         A pointer to the resource or @c NULL if not found.
+ */
+coap_resource_t *coap_get_resource_for_request_path_lkd(coap_context_t *context,
+                                                        coap_str_const_t *uri_path);
 
 /**
  * Deletes an attribute.
