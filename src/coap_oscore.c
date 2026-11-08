@@ -815,6 +815,10 @@ coap_oscore_new_pdu_encrypted_lkd(coap_session_t *session,
   return osc_pdu;
 
 error:
+  /* A response that cannot be protected is never sent, so nothing else
+     releases its request's association */
+  if (!coap_request && association && association->is_observe == 0)
+    oscore_delete_association(session, association);
   if (ciphertext_buffer)
     coap_free_type(COAP_OSCORE_BUF, ciphertext_buffer);
   coap_delete_pdu_lkd(osc_pdu);
@@ -911,6 +915,10 @@ coap_oscore_decrypt_pdu(coap_session_t *session,
   size_t tag_len;
   oscore_recipient_ctx_t *rcp_ctx = NULL;
   oscore_association_t *association = NULL;
+  /* Set once this request has created the association for its response: if
+     the request then fails here, no response releases it unless an error
+     response was protected with it (which consumes it) */
+  int req_association = 0;
   uint8_t external_aad_buffer[100];
   coap_bin_const_t external_aad;
   oscore_sender_ctx_t *snd_ctx = NULL;
@@ -1307,6 +1315,8 @@ coap_oscore_decrypt_pdu(coap_session_t *session,
                                        &cose->partial_iv,
                                        0)) {
       goto error;
+    } else {
+      req_association = 1;
     }
     /* So association is not released when handling decrypt */
     association = NULL;
@@ -1741,6 +1751,9 @@ error_no_ack:
   if (association && association->is_observe == 0 &&
       !oscore_receive_body_in_flight(session, &pdu_token, decrypt_pdu))
     oscore_delete_association(session, association);
+  if (req_association)
+    oscore_delete_association(session,
+                              oscore_find_association(session, &pdu_token));
   coap_delete_pdu_lkd(decrypt_pdu);
   coap_delete_pdu_lkd(plain_pdu);
   return NULL;
