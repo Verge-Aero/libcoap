@@ -1118,14 +1118,11 @@ coap_oscore_decrypt_pdu(coap_session_t *session,
      */
     if (rcp_ctx->initial_state == 0 &&
         !oscore_validate_sender_seq(rcp_ctx, cose)) {
-      coap_log_warn("OSCORE: Replayed or old message\n");
-      build_and_send_error_pdu(session,
-                               pdu,
-                               COAP_RESPONSE_CODE(401),
-                               "Replay detected",
-                               NULL,
-                               NULL,
-                               0);
+      /* Dropped unanswered (Verge): a replayed request is mostly a retransmission
+       * the message layer no longer remembers (session->oscore_rx), whose 4.01
+       * its sender would take for the request's answer while the request ran.
+       * Unanswered, the sender's exchange ends in a timeout: result unknown. */
+      coap_log_warn("OSCORE: Replayed or old message - dropped\n");
       goto error_no_ack;
     }
     if (rcp_ctx->initial_state == 1) {

@@ -1007,14 +1007,16 @@ coap_session_send_pdu(coap_session_t *session, coap_pdu_t *pdu) {
                   pdu->token - pdu->hdr_size,
                   pdu->used_size + pdu->hdr_size);
 #if COAP_OSCORE_SUPPORT && COAP_SERVER_SUPPORT
-  /* Keep the ACK for the last OSCORE request: its duplicates get it again */
-  if (bytes_written >= 0 && pdu->type == COAP_MESSAGE_ACK &&
-      session->oscore_rx_mid_valid && pdu->mid == session->oscore_rx_mid &&
-      !session->oscore_rx_ack && COAP_PROTO_NOT_RELIABLE(session->proto)) {
-    session->oscore_rx_ack = coap_new_binary(pdu->used_size + pdu->hdr_size);
-    if (session->oscore_rx_ack)
-      memcpy(session->oscore_rx_ack->s, pdu->token - pdu->hdr_size,
-             pdu->used_size + pdu->hdr_size);
+  /* Keep the ACK for a remembered OSCORE request: its duplicates get it again */
+  if (bytes_written >= 0 && pdu->type == COAP_MESSAGE_ACK && COAP_PROTO_NOT_RELIABLE(session->proto)) {
+    for (size_t i = 0; i < COAP_OSCORE_RX_KEEP; i++)
+      if (session->oscore_rx[i].valid && session->oscore_rx[i].mid == pdu->mid && !session->oscore_rx[i].ack) {
+        session->oscore_rx[i].ack = coap_new_binary(pdu->used_size + pdu->hdr_size);
+        if (session->oscore_rx[i].ack)
+          memcpy(session->oscore_rx[i].ack->s, pdu->token - pdu->hdr_size,
+                 pdu->used_size + pdu->hdr_size);
+        break;
+      }
   }
 #endif /* COAP_OSCORE_SUPPORT && COAP_SERVER_SUPPORT */
   coap_show_pdu(COAP_LOG_DEBUG, pdu);
@@ -4064,18 +4066,21 @@ coap_dispatch(coap_context_t *context, coap_session_t *session,
     if (decrypt) {
 #if COAP_SERVER_SUPPORT
       if (COAP_PDU_IS_REQUEST(pdu) && pdu->type == COAP_MESSAGE_CON &&
-          COAP_PROTO_NOT_RELIABLE(session->proto) &&
-          session->oscore_rx_mid_valid && pdu->mid == session->oscore_rx_mid) {
-        if (session->oscore_rx_ack) {
-          coap_log_debug("OSCORE: duplicate request mid=0x%04x - ACK resent\n",
-                         pdu->mid);
-          session->sock.lfunc[COAP_LAYER_SESSION].l_write(session,
-              session->oscore_rx_ack->s, session->oscore_rx_ack->length);
-        } else {
-          coap_log_debug("OSCORE: duplicate request mid=0x%04x - ACK not yet sent\n",
-                         pdu->mid);
+          COAP_PROTO_NOT_RELIABLE(session->proto)) {
+        for (size_t i = 0; i < COAP_OSCORE_RX_KEEP; i++) {
+          if (!session->oscore_rx[i].valid || session->oscore_rx[i].mid != pdu->mid)
+            continue;
+          if (session->oscore_rx[i].ack) {
+            coap_log_debug("OSCORE: duplicate request mid=0x%04x - ACK resent\n",
+                           pdu->mid);
+            session->sock.lfunc[COAP_LAYER_SESSION].l_write(session,
+                session->oscore_rx[i].ack->s, session->oscore_rx[i].ack->length);
+          } else {
+            coap_log_debug("OSCORE: duplicate request mid=0x%04x - ACK not yet sent\n",
+                           pdu->mid);
+          }
+          goto cleanup;
         }
-        goto cleanup;
       }
 #endif /* COAP_SERVER_SUPPORT */
       /* find message id in sendqueue to stop retransmission and get sent */
@@ -4113,10 +4118,12 @@ coap_dispatch(coap_context_t *context, coap_session_t *session,
 #if COAP_SERVER_SUPPORT
         if (COAP_PDU_IS_REQUEST(pdu) && pdu->type == COAP_MESSAGE_CON &&
             COAP_PROTO_NOT_RELIABLE(session->proto)) {
-          session->oscore_rx_mid = pdu->mid;
-          session->oscore_rx_mid_valid = 1;
-          coap_delete_binary(session->oscore_rx_ack);
-          session->oscore_rx_ack = NULL;
+          uint8_t n = session->oscore_rx_next;
+          session->oscore_rx_next = (uint8_t)((n + 1) % COAP_OSCORE_RX_KEEP);
+          coap_delete_binary(session->oscore_rx[n].ack);
+          session->oscore_rx[n].ack = NULL;
+          session->oscore_rx[n].mid = pdu->mid;
+          session->oscore_rx[n].valid = 1;
         }
 #endif /* COAP_SERVER_SUPPORT */
         pdu = dec_pdu;

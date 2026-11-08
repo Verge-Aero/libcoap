@@ -65,6 +65,10 @@ typedef enum coap_ext_token_check_t {
  * Abstraction of virtual session that can be attached to coap_context_t
  * (client) or coap_endpoint_t (server).
  */
+#ifndef COAP_OSCORE_RX_KEEP
+#define COAP_OSCORE_RX_KEEP 4   /* OSCORE requests remembered per session for their retransmissions */
+#endif
+
 struct coap_session_t {
   coap_proto_t proto;               /**< protocol used */
   coap_session_type_t type;         /**< client or server side socket */
@@ -237,10 +241,15 @@ struct coap_session_t {
      before decryption, where the replay window would refuse it: with the ACK
      sent for the original (piggybacked response or empty ACK), or not at all
      while that ACK is still owed. */
-  uint8_t oscore_rx_mid_valid;    /**< oscore_rx_mid is set */
-  coap_mid_t oscore_rx_mid;       /**< MID of the last CON request that
-                                       passed OSCORE */
-  coap_binary_t *oscore_rx_ack;   /**< The encoded ACK sent for it, or NULL */
+  /* The last CON requests that passed OSCORE, one for each exchange a peer may
+     have outstanding at once (NSTART per lane, Verge QoS), newest overwriting
+     the oldest: each with the encoded ACK sent for it, or NULL. */
+  struct {
+    uint8_t valid;
+    coap_mid_t mid;
+    coap_binary_t *ack;
+  } oscore_rx[COAP_OSCORE_RX_KEEP];
+  uint8_t oscore_rx_next;         /**< the entry the next request takes */
 #endif /* COAP_OSCORE_SUPPORT */
 #endif /* COAP_SERVER_SUPPORT */
 };
