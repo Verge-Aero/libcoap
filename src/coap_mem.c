@@ -583,6 +583,9 @@ coap_free_type(coap_memory_tag_t type, void *p) {
  * Exhaustion falls back to malloc rather than failing: a pool that turns a transient burst
  * into a dropped message would be worse than the churn it removes. The fallback is
  * counted so the trade stays visible (coap_pool_stats()).
+ *
+ * The pool is shared by every context in the process, which may run on different threads,
+ * as malloc() may be: its free list is changed only under pdu_pool_lock.
  */
 
 #if COAP_POOL_PDUS > 0
@@ -604,11 +607,13 @@ static coap_pool_block_t *pdu_pool_free;
 static unsigned pdu_pool_inuse;
 static unsigned pdu_pool_peak;
 static unsigned pdu_pool_overflow;   /* times we fell back to malloc */
+static coap_mutex_t pdu_pool_lock;   /* guards the free list and the counts */
 
 static void
 pdu_pool_init(void) {
   size_t i;
 
+  coap_mutex_init(&pdu_pool_lock);
   pdu_pool_free = NULL;
   for (i = 0; i < COAP_POOL_PDUS; i++) {
     pdu_pool_data[i].next = pdu_pool_free;
@@ -636,8 +641,10 @@ pdu_pool_alloc(size_t size) {
    * size COAP_PDU is ever allocated at, but check rather than assume: a future field
    * addition must fall back, not corrupt the next block.
    */
+  coap_mutex_lock(&pdu_pool_lock);
   if (size > sizeof(((coap_pool_block_t *)0)->obj) || pdu_pool_free == NULL) {
     pdu_pool_overflow++;
+    coap_mutex_unlock(&pdu_pool_lock);
     return NULL;
   }
 
@@ -646,6 +653,7 @@ pdu_pool_alloc(size_t size) {
   if (++pdu_pool_inuse > pdu_pool_peak) {
     pdu_pool_peak = pdu_pool_inuse;
   }
+  coap_mutex_unlock(&pdu_pool_lock);
   return b;
 }
 
@@ -653,14 +661,17 @@ static void
 pdu_pool_free_block(void *p) {
   coap_pool_block_t *b = (coap_pool_block_t *)p;
 
+  coap_mutex_lock(&pdu_pool_lock);
   b->next = pdu_pool_free;
   pdu_pool_free = b;
   pdu_pool_inuse--;
+  coap_mutex_unlock(&pdu_pool_lock);
 }
 
 void
 coap_pool_stats(unsigned *inuse, unsigned *peak, unsigned *capacity,
                 unsigned *overflow) {
+  coap_mutex_lock(&pdu_pool_lock);
   if (inuse) {
     *inuse = pdu_pool_inuse;
   }
@@ -673,6 +684,7 @@ coap_pool_stats(unsigned *inuse, unsigned *peak, unsigned *capacity,
   if (overflow) {
     *overflow = pdu_pool_overflow;
   }
+  coap_mutex_unlock(&pdu_pool_lock);
 }
 #endif /* COAP_POOL_PDUS > 0 */
 
